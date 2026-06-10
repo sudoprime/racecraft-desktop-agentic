@@ -1,5 +1,30 @@
 # CLAUDE.md - RaceCraft Desktop Implementation Guide
 
+> ## ⚠️ Read this first — design doc vs. actual state (updated 2026-06-10)
+>
+> Most of this file is the **original design/research document**; the actual
+> implementation in `racecraft/` is much smaller and differs in places. What
+> exists and works today:
+>
+> - **Readers**: iRacing (`readers/iracing.py`) and **`readers/simulated.py`**
+>   (synthetic laps — no sim needed). The F1/ACC/GT7/Forza parsers described
+>   below are **not implemented**.
+> - **Auth** (`auth.py`): matches the real backend — SuperTokens
+>   email/password signin → `/api/auth/desktop/authorize` → **OAuth PKCE
+>   desktop-JWT exchange** (headless), or the browser `/api/app_login` flow
+>   (interactive). The design doc's `X-API-Key` device-registration scheme
+>   below was never built server-side.
+> - **Upload** (`streaming.py`): the real `/api/streaming` contract —
+>   session/start → gzipped JSON chunk upload (md5) → session/end →
+>   session/analyze → status polling. Chunk sample format = the platform's
+>   `deploy/helm/racecraft/files/generate_mock_chunks.py`.
+> - **Entry points**: `python -m racecraft.app` (Qt tray app; `--test` for
+>   simulated telemetry) and `python -m racecraft.headless` (no Qt, CI-usable
+>   exit code). Flags + env vars: see [QUICKSTART.md](QUICKSTART.md).
+> - **E2E environment**: the platform repo runs this app inside an in-cluster
+>   KubeVirt **Windows VM** against a full RaceCraft instance — runbook at
+>   `racecraft-agentic:deploy/windows-vm/README.md`.
+
 ## Project Vision
 
 RaceCraft Desktop is a cross-platform racing simulator telemetry collection application with initial focus on iRacing, architected for extensibility to support F1 games, Assetto Corsa Competizione, Gran Turismo 7, and Forza Motorsport. The system provides a unified telemetry API abstracting game-specific protocols (UDP and shared memory) into normalized data structures for consumption by dashboards, analytics tools, and hardware integrations.

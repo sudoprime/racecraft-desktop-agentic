@@ -1,20 +1,51 @@
 """Main application entry point for RaceCraft Desktop"""
 
-import sys
+import argparse
 import asyncio
+import os
+import sys
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication
-from qasync import QEventLoop
-from racecraft.ui.main_window import MainWindow
-from racecraft.ui.tray import RaceCraftTray
-from racecraft.auth import AuthenticationService
-from racecraft.collector import TelemetryCollector
+
+
+DEFAULT_API_URL = os.environ.get("RACECRAFT_API_URL", "https://racecraft.ai")
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description="RaceCraft Desktop companion app")
+    ap.add_argument("--api-url", default=DEFAULT_API_URL,
+                    help="RaceCraft backend base URL (env RACECRAFT_API_URL)")
+    ap.add_argument("--test", action="store_true",
+                    help="generate simulated telemetry instead of attaching to a sim")
+    ap.add_argument("--headless", action="store_true",
+                    help="run one test session without UI and exit (implies --test)")
+    ap.add_argument("--email", default=os.environ.get("RACECRAFT_EMAIL"),
+                    help="login email (env RACECRAFT_EMAIL); enables headless password login")
+    ap.add_argument("--password", default=os.environ.get("RACECRAFT_PASSWORD"),
+                    help="login password (env RACECRAFT_PASSWORD)")
+    ap.add_argument("--laps", type=int, default=int(os.environ.get("RACECRAFT_TEST_LAPS", "4")),
+                    help="laps to simulate in --test mode")
+    ap.add_argument("--time-scale", type=float,
+                    default=float(os.environ.get("RACECRAFT_TEST_TIMESCALE", "1.0")),
+                    help="simulated-time speedup factor in --test mode")
+    ap.add_argument("--wait", action="store_true",
+                    help="(headless) block until the analysis completes")
+    return ap.parse_args(argv)
 
 
 class RaceCraftApp:
-    """Main application coordinator"""
+    """Main application coordinator (Qt UI mode)"""
 
-    def __init__(self):
+    def __init__(self, args):
+        # Qt imports stay inside UI mode so --headless works without a display
+        from PyQt6.QtWidgets import QApplication
+        from qasync import QEventLoop
+        from racecraft.ui.main_window import MainWindow
+        from racecraft.ui.tray import RaceCraftTray
+        from racecraft.auth import AuthenticationService
+        from racecraft.collector import TelemetryCollector
+        from racecraft.streaming import StreamingClient
+
+        self.args = args
         self.qt_app = QApplication(sys.argv)
 
         # Use qasync for asyncio/Qt integration
@@ -22,9 +53,10 @@ class RaceCraftApp:
         asyncio.set_event_loop(self.loop)
 
         # Create services
-        # TODO: Replace with actual API URL from config
-        self.auth = AuthenticationService("https://api.racecraft.example.com")
-        self.collector = TelemetryCollector()
+        self.auth = AuthenticationService(args.api_url)
+        self.streaming = StreamingClient(args.api_url, self.auth)
+        self.collector = TelemetryCollector(streaming=self.streaming,
+                                            test_mode=args.test)
 
         # Create UI
         self.main_window = MainWindow()
@@ -45,56 +77,45 @@ class RaceCraftApp:
 
     def _get_icon_path(self) -> str:
         """Get path to tray icon"""
-        # Check if icon exists, otherwise use default
         icon_path = Path("assets/icon.png")
         if icon_path.exists():
             return str(icon_path)
-
-        # Fall back to creating a simple icon or using system default
-        # For now, return empty string (Qt will use default)
         return ""
 
     async def start(self):
         """Start the application"""
-        print("RaceCraft Desktop starting...")
+        print(f"RaceCraft Desktop starting (API: {self.args.api_url}"
+              f"{', TEST MODE' if self.args.test else ''})...")
 
-        # Authenticate on startup (skip if network unavailable - dev mode)
+        # Authenticate on startup
+        credentials = None
         try:
-            credentials = await self.auth.validate_on_startup()
-
-            if credentials:
-                self.main_window.update_auth_status({
-                    "user_id": credentials.user_id,
-                    "license_tier": credentials.license_tier,
-                    "authorized": True
-                })
-                self.tray.update_status("Authenticated")
-                print(f"Authenticated as user: {credentials.user_id}")
+            if self.args.email and self.args.password:
+                credentials = await self.auth.login_with_password(
+                    self.args.email, self.args.password)
             else:
-                self.main_window.update_auth_status({"authorized": False})
-                self.tray.update_status("Not authenticated")
-                # Show window to prompt login
-                self.main_window.show()
-                print("Authentication required")
-
+                credentials = await self.auth.login_with_browser()
         except Exception as e:
-            # Network error - skip authentication for development
             print(f"Authentication error: {e}")
-            print("Continuing in offline mode (development)")
+
+        if credentials:
             self.main_window.update_auth_status({
-                "user_id": "dev-mode",
-                "license_tier": "development",
-                "authorized": False
+                "user_id": credentials.user_id,
+                "license_tier": credentials.license_tier,
+                "authorized": True,
             })
-            self.tray.update_status("Offline mode")
+            self.tray.update_status("Authenticated")
+            print(f"Authenticated as user: {credentials.user_id}")
+        else:
+            self.main_window.update_auth_status({"authorized": False})
+            self.tray.update_status("Not authenticated")
             self.main_window.show()
+            print("Authentication failed — telemetry will be collected locally only")
+            self.collector.streaming = None  # no uploads without auth
 
         # Start telemetry collector
         print("Starting telemetry collector...")
         await self.collector.start()
-
-        # TODO: Start background services
-        # asyncio.create_task(self.upload.retry_failed_uploads())
 
         # Show tray icon
         self.tray.show()
@@ -131,16 +152,26 @@ class RaceCraftApp:
     def _on_exit(self):
         """Clean shutdown"""
         print("Shutting down RaceCraft Desktop...")
-        # Stop collector
         asyncio.create_task(self.collector.stop())
-        # TODO: Stop other services
         self.qt_app.quit()
 
 
 def main():
     """Main entry point"""
-    app = RaceCraftApp()
+    args = parse_args()
 
+    if args.headless:
+        # No Qt at all — run one simulated session and exit
+        from racecraft.headless import run_test_session
+        rc = asyncio.run(run_test_session(
+            args.api_url,
+            args.email or "dev@racecraft.local",
+            args.password or "DevPassword123!",
+            laps=args.laps, time_scale=args.time_scale, wait=args.wait,
+        ))
+        sys.exit(rc)
+
+    app = RaceCraftApp(args)
     with app.loop:
         app.loop.run_until_complete(app.start())
         app.loop.run_forever()

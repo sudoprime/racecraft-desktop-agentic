@@ -1,5 +1,39 @@
 # RaceCraft Desktop - Quick Start Guide
 
+## Test mode (no sim required)
+
+The app can generate simulated telemetry and stream it through the real
+upload path (OAuth PKCE login → `/api/streaming` session → gzipped chunks →
+AI analysis) without any simulator installed. This is how the automated E2E
+environment exercises the full platform.
+
+```bash
+# Headless: one simulated session, then exit (works on Linux/Windows, no UI)
+python -m racecraft.headless \
+    --api-url http://<racecraft-host>:30080 \
+    --email dev@racecraft.local --password 'DevPassword123!' \
+    --laps 4 --time-scale 10 --wait
+
+# GUI test mode: tray app runs, but with a simulated game instead of a real sim
+python -m racecraft.app --test --api-url http://<racecraft-host>:30080 \
+    --email dev@racecraft.local --password 'DevPassword123!'
+```
+
+All flags have env-var equivalents for unattended setups: `RACECRAFT_API_URL`,
+`RACECRAFT_EMAIL`, `RACECRAFT_PASSWORD`, `RACECRAFT_TEST_LAPS`,
+`RACECRAFT_TEST_TIMESCALE`.
+
+- `--time-scale N` emits frames N× faster than real time while keeping
+  data timestamps honest (a 6-minute session generates in ~36s at 10×).
+- Auth: with `--email/--password` the app signs in via SuperTokens and then
+  drives the real PKCE desktop-token flow server-side
+  (`/api/auth/desktop/authorize` → `/api/auth/desktop/token`). Without
+  credentials, the GUI opens the system browser (production flow).
+- The simulated profile is the platform's standard 8-corner synthetic lap
+  (same family as `deploy/helm/racecraft/files/generate_mock_chunks.py` in
+  the platform repo), driven through an accel/brake controller so braking
+  points and corner exits look like real driving to the coaching pipeline.
+
 ## For Developers
 
 ### 1. Setup Environment (First Time Only)

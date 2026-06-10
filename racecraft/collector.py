@@ -86,6 +86,23 @@ class TelemetryStats(QObject):
         self.stats_updated.emit(stats)
 
 
+# Test-mode game config: the SimulatedReader generates synthetic laps
+# without a sim attached (see racecraft/readers/simulated.py)
+SIMULATED_GAME_CONFIG = {
+    "name": "Simulated",
+    "protocol": "simulated",
+    "reader_module": "racecraft.readers.simulated",
+    "reader_class": "SimulatedReader",
+    "parser_module": "racecraft.parsers.iracing",
+    "parser_class": "IRacingParser",
+    "update_rate": 60,
+    "process_name": "simulated",
+}
+
+# Map collector game names to the backend's Game enum values
+GAME_ENUM = {"iRacing": "iracing", "Simulated": "iracing"}
+
+
 class TelemetryCollector(QObject):
     """Coordinates game detection and telemetry collection"""
 
@@ -95,11 +112,18 @@ class TelemetryCollector(QObject):
     game_disconnected = pyqtSignal()
     error_occurred = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, streaming=None, test_mode: bool = False):
         super().__init__()
 
         self.detector = GameDetector()
         self.stats = TelemetryStats()
+
+        # Streaming upload client (racecraft.streaming.StreamingClient);
+        # None = collect locally only (unauthenticated / offline)
+        self.streaming = streaming
+        self.test_mode = test_mode
+        self._test_session_done = False  # one simulated session per app start
+        self._session_active = False
 
         # Current reader/parser
         self.reader: Optional[ITelemetryReader] = None
@@ -134,7 +158,11 @@ class TelemetryCollector(QObject):
     async def _async_check_games(self):
         """Async game detection check"""
         try:
-            current = await self.detector.detect_active_game()
+            if self.test_mode:
+                # Simulated game "runs" until its lap count completes
+                current = None if self._test_session_done else SIMULATED_GAME_CONFIG
+            else:
+                current = await self.detector.detect_active_game()
 
             # State changed?
             if current != self._last_detected_game:
@@ -182,6 +210,22 @@ class TelemetryCollector(QObject):
                 self.stats.game_name = game_config['name']
                 self.stats.reset()
 
+                # Start a streaming session if we have an upload client
+                self._session_active = False
+                if self.streaming:
+                    try:
+                        await self.streaming.start_session(
+                            game=GAME_ENUM.get(game_config['name'], 'unknown'),
+                            track_name=getattr(self.reader, 'track_name', 'Unknown Track'),
+                            car_name=getattr(self.reader, 'car_name', 'Unknown Car'),
+                            session_type='practice',
+                            metadata={'source': game_config.get('protocol', 'desktop')},
+                        )
+                        self._session_active = True
+                        print(f"TelemetryCollector: Streaming session {self.streaming.session_id}")
+                    except Exception as e:
+                        print(f"TelemetryCollector: Streaming unavailable ({e}); collecting locally")
+
                 # Emit signal
                 self.game_connected.emit(game_config['name'])
 
@@ -217,14 +261,42 @@ class TelemetryCollector(QObject):
                     # Update stats
                     self.stats.record_frame(telemetry)
 
-                    # TODO: Queue for session manager, upload service, etc.
+                    # Stream to backend
+                    if self._session_active:
+                        try:
+                            await self.streaming.add_frame(
+                                telemetry,
+                                track_length=getattr(self.reader, 'track_length', None),
+                            )
+                        except Exception as e:
+                            print(f"TelemetryCollector: chunk upload failed: {e}")
                 else:
                     # Invalid frame, skip
                     pass
 
+            # Reader ended on its own (sim exited / simulated laps complete)
+            await self._finish_session()
+            if self.test_mode:
+                self._test_session_done = True
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print(f"TelemetryCollector: Collection error: {e}")
             self.error_occurred.emit(f"Collection error: {e}")
+
+    async def _finish_session(self):
+        """End the streaming session and submit it for analysis (once)."""
+        if not self._session_active:
+            return
+        self._session_active = False
+        try:
+            await self.streaming.end_session()
+            analysis_id = await self.streaming.submit_for_analysis(
+                "auto-submitted by desktop app")
+            print(f"TelemetryCollector: session submitted for analysis ({analysis_id})")
+        except Exception as e:
+            print(f"TelemetryCollector: session end/submit failed: {e}")
 
     async def _stop_collection(self):
         """Stop active telemetry collection"""
@@ -235,6 +307,9 @@ class TelemetryCollector(QObject):
             except asyncio.CancelledError:
                 pass
             self._collection_task = None
+
+        # Game exited while a session was live (e.g. real sim closed)
+        await self._finish_session()
 
         if self.reader:
             await self.reader.disconnect()

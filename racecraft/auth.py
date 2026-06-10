@@ -1,104 +1,202 @@
-"""Authentication service for RaceCraft Desktop"""
+"""Authentication for RaceCraft Desktop.
+
+Two ways to obtain a desktop JWT, both ending at the backend's real
+OAuth 2.0 PKCE endpoints (backend/app/routers/desktop_auth.py):
+
+1. login_with_password(email, password) — headless. Signs in via
+   SuperTokens email/password to get an st-access-token, then drives
+   the PKCE flow server-side (/api/auth/desktop/authorize →
+   /api/auth/desktop/token). Used by --test / --headless mode and by
+   automated E2E environments. Falls back to using the SuperTokens
+   access token directly as the Bearer if the PKCE exchange fails
+   (streaming endpoints accept both via verify_desktop_or_web_session).
+
+2. login_with_browser() — interactive. Opens the system browser at
+   /api/app_login with a PKCE challenge and catches the redirect on a
+   localhost callback server. The production desktop flow.
+"""
+
+import asyncio
+import base64
+import hashlib
+import secrets
+import webbrowser
+from typing import Optional
 
 import httpx
-from typing import Optional
-import keyring
-import uuid
+
 from racecraft.models import AuthCredentials
+
+CLIENT_ID = "racecraft-desktop"
+REDIRECT_PORT = 8765
+REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Generate (code_verifier, code_challenge) per RFC 7636 S256."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode()
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
 
 
 class AuthenticationService:
-    """Handle authentication with remote server"""
+    """Handle authentication against the RaceCraft backend."""
 
     def __init__(self, api_base_url: str):
-        self.api_base_url = api_base_url
-        self.client = httpx.AsyncClient(timeout=10.0)
+        self.api_base_url = api_base_url.rstrip("/")
+        self.client = httpx.AsyncClient(timeout=15.0)
         self._credentials: Optional[AuthCredentials] = None
+        self._bearer_token: Optional[str] = None
+        self._refresh_token: Optional[str] = None
 
-    async def validate_on_startup(self) -> Optional[AuthCredentials]:
-        """
-        Called on app startup to validate stored credentials.
-        If no credentials exist, prompt user to login.
-        """
-        # Try to load stored credentials
-        stored_key = keyring.get_password("racecraft", "api_key")
+    # -- headless (test / E2E) path ---------------------------------------
 
-        if not stored_key:
-            # First run - need to authenticate
-            return await self._initial_authentication()
+    async def login_with_password(self, email: str, password: str,
+                                  create_account: bool = True) -> Optional[AuthCredentials]:
+        form = {"formFields": [
+            {"id": "email", "value": email},
+            {"id": "password", "value": password},
+        ]}
 
-        # Validate existing credentials
-        try:
-            response = await self.client.get(
-                f"{self.api_base_url}/api/auth/validate",
-                headers={"X-API-Key": stored_key}
-            )
+        if create_account:
+            # Idempotent: signup fails harmlessly if the user exists
+            try:
+                await self.client.post(f"{self.api_base_url}/api/auth/signup", json=form)
+            except httpx.HTTPError:
+                pass
 
-            if response.status_code == 200:
-                data = response.json()
-                self._credentials = AuthCredentials(
-                    user_id=data['user_id'],
-                    api_key=stored_key,
-                    license_tier=data['license_tier']
-                )
-                return self._credentials
-            else:
-                # Invalid credentials - need to re-authenticate
-                keyring.delete_password("racecraft", "api_key")
-                return await self._initial_authentication()
-
-        except Exception as e:
-            print(f"Validation error: {e}")
+        resp = await self.client.post(f"{self.api_base_url}/api/auth/signin", json=form)
+        resp.raise_for_status()
+        st_token = resp.headers.get("st-access-token")
+        if not st_token:
+            print("Auth: signin succeeded but no st-access-token header")
             return None
 
-    async def _initial_authentication(self) -> Optional[AuthCredentials]:
-        """
-        First-time authentication flow.
-        Generate device_id, request API key from server.
-        """
-        device_id = self._get_or_create_device_id()
+        # Ensure the SuperTokens user exists in the app DB
+        await self.client.post(
+            f"{self.api_base_url}/api/auth/user/sync",
+            headers={"Authorization": f"Bearer {st_token}"},
+        )
 
+        # Exchange the web session for a desktop JWT via the PKCE endpoints
         try:
-            # Request authentication
-            response = await self.client.post(
-                f"{self.api_base_url}/api/auth/device/register",
-                json={"device_id": device_id}
+            creds = await self._pkce_from_session(st_token, email)
+            if creds:
+                return creds
+        except httpx.HTTPError as e:
+            print(f"Auth: PKCE exchange failed ({e}); using web session token")
+
+        # Fallback: streaming endpoints also accept the SuperTokens token
+        self._bearer_token = st_token
+        self._credentials = AuthCredentials(
+            user_id=email, api_key=st_token, license_tier="dev",
+        )
+        return self._credentials
+
+    async def _pkce_from_session(self, st_token: str, email: str) -> Optional[AuthCredentials]:
+        """Authenticated session → auth code → desktop JWT (real PKCE path)."""
+        verifier, challenge = _pkce_pair()
+
+        resp = await self.client.post(
+            f"{self.api_base_url}/api/auth/desktop/authorize",
+            headers={"Authorization": f"Bearer {st_token}"},
+            json={
+                "redirect_uri": REDIRECT_URI,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        resp.raise_for_status()
+        code = resp.json()["code"]
+        return await self._exchange_code(code, verifier)
+
+    # -- interactive (production) path -------------------------------------
+
+    async def login_with_browser(self, timeout_s: int = 300) -> Optional[AuthCredentials]:
+        """Open the system browser for login; catch the localhost redirect."""
+        verifier, challenge = _pkce_pair()
+        state = secrets.token_urlsafe(16)
+        code_future: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def handle_client(reader, writer):
+            try:
+                request_line = (await reader.readline()).decode()
+                path = request_line.split(" ")[1] if " " in request_line else ""
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(path).query)
+                body = b"<html><body>RaceCraft login complete. You can close this window.</body></html>"
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                             b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+                await writer.drain()
+                if not code_future.done() and qs.get("state", [""])[0] == state and "code" in qs:
+                    code_future.set_result(qs["code"][0])
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(handle_client, "127.0.0.1", REDIRECT_PORT)
+        try:
+            auth_url = (
+                f"{self.api_base_url}/api/app_login?response_type=code"
+                f"&client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+                f"&code_challenge={challenge}&code_challenge_method=S256&state={state}"
             )
-
-            if response.status_code == 200:
-                data = response.json()
-
-                # Store API key securely
-                keyring.set_password("racecraft", "api_key", data['api_key'])
-
-                self._credentials = AuthCredentials(
-                    user_id=data['user_id'],
-                    api_key=data['api_key'],
-                    license_tier=data.get('license_tier', 'free')
-                )
-
-                return self._credentials
-            elif response.status_code == 403:
-                # Device/user not authorized
-                print("Authorization required. Visit dashboard to enable this device.")
-                return None
-            else:
-                print(f"Authentication failed: {response.status_code}")
-                return None
-
-        except Exception as e:
-            print(f"Authentication error: {e}")
+            webbrowser.open(auth_url)
+            code = await asyncio.wait_for(code_future, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            print("Auth: browser login timed out")
             return None
+        finally:
+            server.close()
+            await server.wait_closed()
 
-    def _get_or_create_device_id(self) -> str:
-        """Get or create unique device ID"""
-        device_id = keyring.get_password("racecraft", "device_id")
+        return await self._exchange_code(code, verifier)
 
-        if not device_id:
-            device_id = str(uuid.uuid4())
-            keyring.set_password("racecraft", "device_id", device_id)
+    # -- shared -------------------------------------------------------------
 
-        return device_id
+    async def _exchange_code(self, code: str, verifier: str) -> Optional[AuthCredentials]:
+        resp = await self.client.post(
+            f"{self.api_base_url}/api/auth/desktop/token",
+            json={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": REDIRECT_URI,
+                "client_id": CLIENT_ID,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        self._bearer_token = data["access_token"]
+        self._refresh_token = data.get("refresh_token")
+        self._credentials = AuthCredentials(
+            user_id=str(data.get("user_id", "")),
+            api_key=data["access_token"],
+            license_tier=data.get("username") or data.get("user_email", ""),
+        )
+        print(f"Auth: desktop token issued for {data.get('user_email')}")
+        return self._credentials
+
+    async def refresh(self) -> bool:
+        """Refresh the desktop access token (refresh_token grant)."""
+        if not self._refresh_token:
+            return False
+        resp = await self.client.post(
+            f"{self.api_base_url}/api/auth/desktop/token",
+            json={
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+                "client_id": CLIENT_ID,
+            },
+        )
+        if resp.status_code != 200:
+            return False
+        self._bearer_token = resp.json()["access_token"]
+        return True
+
+    @property
+    def bearer_token(self) -> Optional[str]:
+        return self._bearer_token
 
     @property
     def user_id(self) -> Optional[str]:
@@ -106,4 +204,4 @@ class AuthenticationService:
 
     @property
     def is_authenticated(self) -> bool:
-        return self._credentials is not None
+        return self._bearer_token is not None
