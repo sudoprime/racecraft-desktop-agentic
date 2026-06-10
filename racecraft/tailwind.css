@@ -1,0 +1,165 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: ["class"],
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+        // Racing-focused color palette
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+          50: '#fef2f2',
+          100: '#fee2e2',
+          200: '#fecaca',
+          300: '#fca5a5',
+          400: '#f87171',
+          500: '#ef4444',
+          600: '#dc2626', // Racing red - main CTA color
+          700: '#b91c1c',
+          800: '#991b1b',
+          900: '#7f1d1d',
+          950: '#450a0a',
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+          50: '#f9fafb',
+          100: '#f3f4f6',
+          200: '#e5e7eb',
+          300: '#d1d5db',
+          400: '#9ca3af',
+          500: '#6b7280', // Track gray - secondary elements
+          600: '#4b5563',
+          700: '#374151',
+          800: '#1f2937',
+          900: '#111827',
+          950: '#030712',
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+          50: '#fffbeb',
+          100: '#fef3c7',
+          200: '#fde68a',
+          300: '#fcd34d',
+          400: '#fbbf24',
+          500: '#f59e0b', // Yellow flag amber - warnings
+          600: '#d97706',
+          700: '#b45309',
+          800: '#92400e',
+          900: '#78350f',
+          950: '#451a03',
+        },
+        success: {
+          50: '#ecfdf5',
+          100: '#d1fae5',
+          200: '#a7f3d0',
+          300: '#6ee7b7',
+          400: '#34d399',
+          500: '#10b981', // Racing green - improvements
+          600: '#059669',
+          700: '#047857',
+          800: '#065f46',
+          900: '#064e3b',
+          950: '#022c22',
+        },
+        error: {
+          50: '#fef2f2',
+          100: '#fee2e2',
+          200: '#fecaca',
+          300: '#fca5a5',
+          400: '#f87171',
+          500: '#ef4444',
+          600: '#dc2626', // Racing red - same as primary
+          700: '#b91c1c',
+          800: '#991b1b',
+          900: '#7f1d1d',
+          950: '#450a0a',
+        },
+        warning: {
+          50: '#fffbeb',
+          100: '#fef3c7',
+          200: '#fde68a',
+          300: '#fcd34d',
+          400: '#fbbf24',
+          500: '#f59e0b', // Yellow flag amber
+          600: '#d97706',
+          700: '#b45309',
+          800: '#92400e',
+          900: '#78350f',
+          950: '#451a03',
+        },
+        // Improved Professional Telemetry Color System
+        'telemetry-main': '#121212',        // Main background (softer)
+        'telemetry-card': '#1F1F1F',        // Card backgrounds (better contrast)
+        'telemetry-nested': '#292929',      // Nested elements (more visible)
+        'telemetry-primary': '#F2F2F2',     // Primary text (softer white)
+        'telemetry-secondary': '#B3B3B3',   // Secondary text (better readability)
+        'telemetry-disabled': '#808080',    // Disabled text (improved contrast)
+        'telemetry-brake': '#DC2626',       // Brake/Critical
+        'telemetry-throttle': '#10B981',    // Throttle/Success
+        'telemetry-warning': '#F59E0B',     // Warning
+        'telemetry-info': '#3B82F6',        // Info/Links
+        'telemetry': '#333333',             // Borders (more visible)
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        display: ['Titillium Web', 'Bebas Neue', 'Inter', 'system-ui', 'sans-serif'], // Racing headers
+        mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'], // Technical data
+        technical: ['SF Pro', 'Roboto', 'Inter', 'system-ui', 'sans-serif'], // Body text
+      },
+      backgroundImage: {
+        'gradient-carbon': 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+        'gradient-performance': 'linear-gradient(135deg, #10b981 0%, #047857 100%)',
+        'gradient-radial-dark': 'radial-gradient(ellipse at top, #1e293b 0%, transparent 50%)',
+        'grid-pattern': 'url("data:image/svg+xml,%3Csvg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"%3E%3Cg fill="none" fill-rule="evenodd"%3E%3Cg fill="%23374151" fill-opacity="0.1"%3E%3Ccircle cx="7" cy="7" r="1"/%3E%3Ccircle cx="37" cy="7" r="1"/%3E%3Ccircle cx="7" cy="37" r="1"/%3E%3Ccircle cx="37" cy="37" r="1"/%3E%3C/g%3E%3C/svg%3E")',
+      },
+      animation: {
+        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        'pulse-slower': 'breathe 3s ease-in-out infinite',
+        'gradient': 'gradient 3s ease infinite',
+        'fade-in': 'fadeIn 0.3s ease-in-out forwards',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0', transform: 'translateY(10px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        breathe: {
+          '0%, 100%': {
+            opacity: '1',
+          },
+          '50%': {
+            opacity: '0.7',
+          },
+        },
+      },
+    },
+  },
+  plugins: [require("tailwindcss-animate")],
+}
