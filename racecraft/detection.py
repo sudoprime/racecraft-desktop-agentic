@@ -60,6 +60,48 @@ class GameDetector:
             "update_rate": 60,
             "validation_status": "implemented-untested",
         },
+        "acs.exe": {  # Assetto Corsa (original) — sim process
+            "name": "Assetto Corsa",
+            "protocol": "shared_memory",
+            "reader_module": "racecraft.readers.ac",
+            "reader_class": "ACReader",
+            "parser_module": "racecraft.parsers.ac",
+            "parser_class": "ACParser",
+            "update_rate": 60,
+            "validation_status": "implemented-untested",
+        },
+        "AMS2AVX.exe": {  # Automobilista 2 (AVX build, the common one)
+            "name": "Automobilista 2",
+            "protocol": "shared_memory",
+            "reader_module": "racecraft.readers.ams2",
+            "reader_class": "AMS2Reader",
+            "parser_module": "racecraft.parsers.ams2",
+            "parser_class": "AMS2Parser",
+            "update_rate": 60,
+            # requires Options -> System -> Shared Memory = PCARS2
+            "validation_status": "implemented-untested",
+        },
+        "AMS2.exe": {  # non-AVX build
+            "name": "Automobilista 2",
+            "protocol": "shared_memory",
+            "reader_module": "racecraft.readers.ams2",
+            "reader_class": "AMS2Reader",
+            "parser_module": "racecraft.parsers.ams2",
+            "parser_class": "AMS2Parser",
+            "update_rate": 60,
+            "validation_status": "implemented-untested",
+        },
+        "rFactor2.exe": {
+            "name": "rFactor 2",
+            "protocol": "shared_memory",
+            "reader_module": "racecraft.readers.rf2",
+            "reader_class": "RF2Reader",
+            "parser_module": "racecraft.parsers.rf2",
+            "parser_class": "RF2Parser",
+            "update_rate": 60,
+            # requires rF2SharedMemoryMapPlugin (CrewChief/SimHub install it)
+            "validation_status": "implemented-untested",
+        },
         # Future games will be added here
     }
 
