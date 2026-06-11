@@ -40,8 +40,27 @@ class GameDetector:
             # see racecraft-agentic/docs/COMPATIBILITY.md
             "validation_status": "implemented-untested",
         },
+        "F1_24.exe": {
+            "name": "F1 24",
+            "protocol": "udp",
+            "reader_module": "racecraft.readers.f1",
+            "reader_class": "F1Reader",
+            "parser_module": "racecraft.parsers.f1",
+            "parser_class": "F1Parser",
+            "update_rate": 60,
+            "validation_status": "implemented-untested",
+        },
+        "F1_25.exe": {  # same packet format family
+            "name": "F1 25",
+            "protocol": "udp",
+            "reader_module": "racecraft.readers.f1",
+            "reader_class": "F1Reader",
+            "parser_module": "racecraft.parsers.f1",
+            "parser_class": "F1Parser",
+            "update_rate": 60,
+            "validation_status": "implemented-untested",
+        },
         # Future games will be added here
-        # "F1_24.exe": {...},
     }
 
     def __init__(self):
