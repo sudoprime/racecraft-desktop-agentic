@@ -28,9 +28,20 @@ class GameDetector:
             "parser_class": "IRacingParser",
             "update_rate": 60,
         },
+        "AC2-Win64-Shipping.exe": {  # Assetto Corsa Competizione
+            "name": "ACC",
+            "protocol": "shared_memory",
+            "reader_module": "racecraft.readers.acc",
+            "reader_class": "ACCReader",
+            "parser_module": "racecraft.parsers.acc",
+            "parser_class": "ACCParser",
+            "update_rate": 60,
+            # implemented to spec, pending manual on-rig validation —
+            # see racecraft-agentic/docs/COMPATIBILITY.md
+            "validation_status": "implemented-untested",
+        },
         # Future games will be added here
         # "F1_24.exe": {...},
-        # "ACC.exe": {...},
     }
 
     def __init__(self):
