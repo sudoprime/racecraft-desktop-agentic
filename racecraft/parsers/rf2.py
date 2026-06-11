@@ -361,7 +361,7 @@ class RF2Parser(ITelemetryParser):
 
             self._frame += 1
             return NormalizedTelemetry(
-                game_name="rfactor2",
+                game_name="rf2",
                 session_id="",
                 timestamp=datetime.now(timezone.utc),
                 frame_number=self._frame,
@@ -406,7 +406,7 @@ class RF2Parser(ITelemetryParser):
 
     @property
     def game_name(self) -> str:
-        return "rfactor2"
+        return "rf2"
 
     def validate_data(self, data: NormalizedTelemetry) -> bool:
         if data.speed > 150.0 or data.speed < 0:
@@ -430,7 +430,7 @@ class RF2Parser(ITelemetryParser):
                             "Qualifying" if 5 <= s <= 8 else
                             "Warmup" if s == 9 else "Race")
             return TelemetryMetadata(
-                game_name="rfactor2",
+                game_name="rf2",
                 track_name=_cstr(info.mTrackName) or "Unknown Track",
                 car_name=(_cstr(tel.mVehicleName) if tel else
                           _cstr(sco.mVehicleName) if sco else "Unknown Car")

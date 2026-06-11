@@ -108,7 +108,7 @@ def make_frame(player_slot=2, n=3, **info_overrides) -> bytes:
 def test_player_found_by_scoring_id_across_slots():
     t = RF2Parser().parse(make_frame(player_slot=2, n=3))
     assert t is not None
-    assert t.game_name == "rfactor2"
+    assert t.game_name == "rf2"
     # all synthetic vehicles share telemetry, so matching is proven by
     # parse succeeding with the player NOT in slot 0
     assert t.lap_number == 6
@@ -145,7 +145,7 @@ def test_no_player_returns_none():
 
 def test_metadata():
     md = RF2Parser().parse_metadata(make_frame())
-    assert md.game_name == "rfactor2"
+    assert md.game_name == "rf2"
     assert md.track_name == "Sebring"
     assert md.car_name == "Formula Trainer"
     assert md.player_name == "Test Driver"
