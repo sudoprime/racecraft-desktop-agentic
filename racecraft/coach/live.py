@@ -66,11 +66,14 @@ class LiveCoach:
     """Feed me frames; I talk (through the TTSQueue's safety rules)."""
 
     def __init__(self, turns: List[Turn], track_length_m: float = DEFAULT_TRACK_LENGTH_M,
-                 tts: Optional[TTSQueue] = None):
+                 tts: Optional[TTSQueue] = None, debrief_hook=None):
         self.turns = sorted(turns, key=lambda t: t.entry_pct)
         self.track_length_m = max(float(track_length_m or 0) or DEFAULT_TRACK_LENGTH_M, 500.0)
         self.rules = RulesEngine()
         self.tts = tts or TTSQueue()
+        # mode B (D4): when set, lap summaries go to the hook (cloud debrief
+        # with local fallback) instead of being spoken directly
+        self.debrief_hook = debrief_hook
         self._crossed = {}
         self._last_lap: Optional[int] = None
         self._lap_start_t = 0.0
@@ -87,9 +90,17 @@ class LiveCoach:
             lap_time = f.t - self._lap_start_t
             if self._last_lap >= 1 and lap_time > 30:
                 text = self.rules.debrief(self._last_lap, lap_time, self._best_lap_time)
+                prior_best = self._best_lap_time
                 if self._best_lap_time is None or lap_time < self._best_lap_time:
                     self._best_lap_time = lap_time
-                if self.tts.speak(text, kind="debrief"):
+                if self.debrief_hook is not None:
+                    summary = {"lap": self._last_lap,
+                               "lap_time": round(lap_time, 3),
+                               "best_lap_time": round(prior_best, 3) if prior_best else None,
+                               "corner_notes": []}
+                    self.debrief_hook(summary, text)
+                    spoken = text  # the hook owns speaking (cloud or fallback)
+                elif self.tts.speak(text, kind="debrief"):
                     spoken = text
             self._last_lap, self._lap_start_t = f.lap, f.t
 
