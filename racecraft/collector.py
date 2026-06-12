@@ -100,7 +100,7 @@ SIMULATED_GAME_CONFIG = {
 }
 
 # Map collector game names to the backend's Game enum values
-GAME_ENUM = {"iRacing": "iracing", "Simulated": "iracing"}
+from racecraft.game_mapping import GAME_ENUM
 
 
 class TelemetryCollector(QObject):
