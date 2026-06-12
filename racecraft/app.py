@@ -2,6 +2,9 @@
 
 import argparse
 import asyncio
+import logging
+
+from racecraft.log import setup_logging
 import os
 import sys
 from pathlib import Path
@@ -30,6 +33,9 @@ def parse_args(argv=None):
     ap.add_argument("--wait", action="store_true",
                     help="(headless) block until the analysis completes")
     return ap.parse_args(argv)
+
+
+logger = logging.getLogger(__name__)
 
 
 class RaceCraftApp:
@@ -84,7 +90,7 @@ class RaceCraftApp:
 
     async def start(self):
         """Start the application"""
-        print(f"RaceCraft Desktop starting (API: {self.args.api_url}"
+        logger.info(f"RaceCraft Desktop starting (API: {self.args.api_url}"
               f"{', TEST MODE' if self.args.test else ''})...")
 
         # Authenticate on startup
@@ -96,7 +102,7 @@ class RaceCraftApp:
             else:
                 credentials = await self.auth.login_with_browser()
         except Exception as e:
-            print(f"Authentication error: {e}")
+            logger.info(f"Authentication error: {e}")
 
         if credentials:
             self.main_window.update_auth_status({
@@ -105,16 +111,16 @@ class RaceCraftApp:
                 "authorized": True,
             })
             self.tray.update_status("Authenticated")
-            print(f"Authenticated as user: {credentials.user_id}")
+            logger.info(f"Authenticated as user: {credentials.user_id}")
         else:
             self.main_window.update_auth_status({"authorized": False})
             self.tray.update_status("Not authenticated")
             self.main_window.show()
-            print("Authentication failed — telemetry will be collected locally only")
+            logger.info("Authentication failed — telemetry will be collected locally only")
             self.collector.streaming = None  # no uploads without auth
 
         # Start telemetry collector
-        print("Starting telemetry collector...")
+        logger.info("Starting telemetry collector...")
         await self.collector.start()
 
         # Show tray icon
@@ -132,7 +138,7 @@ class RaceCraftApp:
 
     def _on_game_connected(self, game_name: str):
         """Called when game is detected and connected"""
-        print(f"Game connected: {game_name}")
+        logger.info(f"Game connected: {game_name}")
         self.tray.update_status(f"Connected: {game_name}")
         self.tray.show_notification(
             "RaceCraft Desktop",
@@ -141,12 +147,12 @@ class RaceCraftApp:
 
     def _on_game_disconnected(self):
         """Called when game disconnects"""
-        print("Game disconnected")
+        logger.info("Game disconnected")
         self.tray.update_status("Waiting for game")
 
     def _on_collector_error(self, error_msg: str):
         """Called when telemetry collector has an error"""
-        print(f"Collector error: {error_msg}")
+        logger.info(f"Collector error: {error_msg}")
         self.tray.update_status(f"Error: {error_msg}")
 
     def _on_exit(self):
@@ -155,29 +161,34 @@ class RaceCraftApp:
         the final chunk flush and session end/submit were silently
         skipped on every exit (platform loop 3, T3). Quit only AFTER the
         collector has actually stopped."""
-        print("Shutting down RaceCraft Desktop...")
+        logger.info("Shutting down RaceCraft Desktop...")
         asyncio.create_task(self._shutdown())
 
     async def _shutdown(self):
         try:
             await self.collector.stop()
         except Exception as e:
-            print(f"Shutdown error (continuing to quit): {e}")
+            logger.info(f"Shutdown error (continuing to quit): {e}")
         finally:
             self.qt_app.quit()
 
 
 def main():
     """Main entry point"""
+    setup_logging()
     args = parse_args()
 
     if args.headless:
         # No Qt at all — run one simulated session and exit
         from racecraft.headless import run_test_session
+        if not (args.email and args.password):
+            logger.info("--email and --password (or RACECRAFT_EMAIL/RACECRAFT_PASSWORD) "
+                  "are required for --headless; hardcoded defaults were removed")
+            sys.exit(2)
         rc = asyncio.run(run_test_session(
             args.api_url,
-            args.email or "dev@racecraft.local",
-            args.password or "DevPassword123!",
+            args.email,
+            args.password,
             laps=args.laps, time_scale=args.time_scale, wait=args.wait,
         ))
         sys.exit(rc)

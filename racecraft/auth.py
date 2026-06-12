@@ -17,6 +17,7 @@ OAuth 2.0 PKCE endpoints (backend/app/routers/desktop_auth.py):
 """
 
 import asyncio
+import logging
 import base64
 import hashlib
 import secrets
@@ -38,6 +39,9 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode()).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return verifier, challenge
+
+
+logger = logging.getLogger(__name__)
 
 
 class AuthenticationService:
@@ -70,7 +74,7 @@ class AuthenticationService:
         resp.raise_for_status()
         st_token = resp.headers.get("st-access-token")
         if not st_token:
-            print("Auth: signin succeeded but no st-access-token header")
+            logger.info("Auth: signin succeeded but no st-access-token header")
             return None
 
         # Ensure the SuperTokens user exists in the app DB
@@ -85,7 +89,7 @@ class AuthenticationService:
             if creds:
                 return creds
         except httpx.HTTPError as e:
-            print(f"Auth: PKCE exchange failed ({e}); using web session token")
+            logger.info(f"Auth: PKCE exchange failed ({e}); using web session token")
 
         # Fallback: streaming endpoints also accept the SuperTokens token
         self._bearer_token = st_token
@@ -144,7 +148,7 @@ class AuthenticationService:
             webbrowser.open(auth_url)
             code = await asyncio.wait_for(code_future, timeout=timeout_s)
         except asyncio.TimeoutError:
-            print("Auth: browser login timed out")
+            logger.info("Auth: browser login timed out")
             return None
         finally:
             server.close()
@@ -174,7 +178,7 @@ class AuthenticationService:
             api_key=data["access_token"],
             license_tier=data.get("username") or data.get("user_email", ""),
         )
-        print(f"Auth: desktop token issued for {data.get('user_email')}")
+        logger.info(f"Auth: desktop token issued for {data.get('user_email')}")
         return self._credentials
 
     async def refresh(self) -> bool:

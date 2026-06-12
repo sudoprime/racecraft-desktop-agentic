@@ -158,7 +158,7 @@ class StreamingClient:
                 if a.get("file_name") == "streaming_session":
                     return a["id"]
         except httpx.HTTPError as e:
-            print(f"StreamingClient: analysis_id discovery failed: {e}")
+            logger.warning(f"StreamingClient: analysis_id discovery failed: {e}")
         return None
 
     # -- internals -------------------------------------------------------

@@ -22,6 +22,7 @@ import sys
 from racecraft.auth import AuthenticationService
 from racecraft.parsers.iracing import IRacingParser
 from racecraft.readers.simulated import SimulatedReader
+from racecraft.session_core import SessionCore
 from racecraft.streaming import StreamingClient
 
 
@@ -40,8 +41,14 @@ async def run_test_session(api_url: str, email: str, password: str,
     parser = IRacingParser()
     streaming = StreamingClient(api_url, auth)
 
+    # SessionCore (platform loop 3, T3 part 2): headless now drives the
+    # SAME lifecycle code the Qt collector wraps — E2E validates the
+    # product's path, not a parallel reimplementation.
+    session_t = {"now": 0.0}
+    core = SessionCore(parser, streaming, coach_clock=lambda: session_t["now"])
+
     await reader.connect()
-    session_id = await streaming.start_session(
+    session_id = await core.start(
         game="iracing",
         track_name=reader.track_name,
         car_name=reader.car_name,
@@ -55,40 +62,31 @@ async def run_test_session(api_url: str, email: str, password: str,
     # over the same frames, cues logged (no audio in headless). The TTS
     # clock follows SESSION time so cue cadence is honest under --time-scale.
     live_coach = None
-    coach_clock = {"now": 0.0}
     if coach:
-        from racecraft.coach.live import LiveCoach, fetch_turns, frame_from_telemetry
+        from racecraft.coach.live import LiveCoach, fetch_turns
         from racecraft.coach.tts import LogBackend, TTSQueue
         turns, length = await fetch_turns(streaming.client, api_url,
                                           auth.bearer_token, reader.track_name)
-        tts = TTSQueue(backend=LogBackend(), clock=lambda: coach_clock["now"])
+        tts = TTSQueue(backend=LogBackend(), clock=lambda: session_t["now"])
         tts.verbosity = "all"
         live_coach = LiveCoach(turns, track_length_m=length, tts=tts)
+        core.coach = live_coach
         print(f"LiveCoach: armed with {len(turns)} turns "
               f"(track_length {length:.0f}m)")
 
-    frames = 0
-    session_t = 0.0
+    last_lap = 0
     async for raw in reader.read_telemetry():
-        telemetry = parser.parse(raw)
-        if telemetry and parser.validate_data(telemetry):
-            await streaming.add_frame(telemetry, track_length=reader.track_length)
-            if live_coach is not None:
-                session_t += 1.0 / hz
-                coach_clock["now"] = session_t
-                cf = frame_from_telemetry(telemetry, session_t)
-                if cf is not None:
-                    said = live_coach.on_frame(cf)
-                    if said:
-                        print(f"  COACH [{session_t:7.1f}s lap {cf.lap}]: {said}")
-            frames += 1
-            if frames % (hz * 30) == 0:
-                print(f"  {frames} frames, lap {telemetry.lap_number}, "
-                      f"{streaming.chunks_uploaded} chunks uploaded")
+        session_t["now"] += 1.0 / hz
+        cue = await core.process_raw(raw, track_length=reader.track_length)
+        if cue:
+            print(f"  COACH [{session_t['now']:7.1f}s]: {cue}")
+        if core.frames and core.frames % (hz * 30) == 0:
+            print(f"  {core.frames} frames, "
+                  f"{streaming.chunks_uploaded} chunks uploaded")
 
     await reader.disconnect()
-    await streaming.end_session()
-    print(f"Session ended: {frames} frames in {streaming.chunks_uploaded} chunks")
+    analysis_id = await core.finish(notes)
+    print(f"Session ended: {core.frames} frames in {streaming.chunks_uploaded} chunks")
     if live_coach is not None:
         spoken = live_coach.tts.backend.spoken
         print(f"LiveCoach: {len(spoken)} utterances this session")
@@ -96,7 +94,6 @@ async def run_test_session(api_url: str, email: str, password: str,
             print("FAIL: coach armed with turns but never spoke")
             return 1
 
-    analysis_id = await streaming.submit_for_analysis(notes)
     print(f"Submitted for analysis: {analysis_id}")
 
     if wait:
@@ -119,8 +116,8 @@ def main() -> None:
                                                         "http://localhost:30080"))
     ap.add_argument("--email", default=os.environ.get("RACECRAFT_EMAIL",
                                                       "dev@racecraft.local"))
-    ap.add_argument("--password", default=os.environ.get("RACECRAFT_PASSWORD",
-                                                         "DevPassword123!"))
+    ap.add_argument("--password", default=os.environ.get("RACECRAFT_PASSWORD"),
+                    help="login password (env RACECRAFT_PASSWORD); required")
     ap.add_argument("--laps", type=int, default=int(os.environ.get("RACECRAFT_TEST_LAPS", "4")))
     ap.add_argument("--hz", type=int, default=60)
     ap.add_argument("--time-scale", type=float,
@@ -131,6 +128,9 @@ def main() -> None:
     ap.add_argument("--coach", action="store_true",
                     help="arm the live coach (D3) and log its cues")
     args = ap.parse_args()
+    if not args.password:
+        ap.error("--password (or RACECRAFT_PASSWORD) is required — "
+                 "hardcoded credential defaults were removed (loop 3, T3)")
 
     rc = asyncio.run(run_test_session(
         args.api_url, args.email, args.password,

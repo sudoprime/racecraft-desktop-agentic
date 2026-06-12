@@ -1,6 +1,7 @@
 """Telemetry collection coordinator"""
 
 import asyncio
+import logging
 import os
 from typing import Optional
 from datetime import datetime
@@ -9,6 +10,9 @@ import importlib
 
 from racecraft.detection import GameDetector
 from racecraft.interfaces import ITelemetryReader, ITelemetryParser
+from racecraft.session_core import SessionCore
+
+logger = logging.getLogger(__name__)
 
 
 class TelemetryStats(QObject):
@@ -151,7 +155,7 @@ class TelemetryCollector(QObject):
     async def start(self):
         """Start game detection and telemetry collection"""
         self._running = True
-        print("TelemetryCollector: Starting game detection...")
+        logger.info("TelemetryCollector: Starting game detection...")
 
         # Start Qt timer for game monitoring
         self._detection_timer.start()
@@ -181,9 +185,7 @@ class TelemetryCollector(QObject):
 
                 self._last_detected_game = current
         except Exception as e:
-            print(f"[ERROR] Exception in _async_check_games: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Exception in _async_check_games: {e}", exc_info=True)
 
     async def stop(self):
         """Stop telemetry collection"""
@@ -193,7 +195,7 @@ class TelemetryCollector(QObject):
 
     async def _on_game_started(self, game_config: dict):
         """Called when a racing game is detected"""
-        print(f"TelemetryCollector: Game detected - {game_config['name']}")
+        logger.info(f"TelemetryCollector: Game detected - {game_config['name']}")
 
         # Stop existing collection
         await self._stop_collection()
@@ -212,23 +214,26 @@ class TelemetryCollector(QObject):
 
             # Connect to game
             if await self.reader.connect():
-                print(f"TelemetryCollector: Connected to {game_config['name']}")
+                logger.info(f"TelemetryCollector: Connected to {game_config['name']}")
                 self.stats.game_name = game_config['name']
                 self.stats.reset()
 
-                # Start a streaming session if we have an upload client
-                self._session_active = False
+                # Session lifecycle is owned by the Qt-free SessionCore
+                # (platform loop 3, T3 part 2) — the same code headless
+                # E2E drives.
+                self.core = SessionCore(self.parser, self.streaming,
+                                        coach=self.coach,
+                                        on_frame=self.stats.record_frame)
                 if self.streaming:
                     try:
-                        await self.streaming.start_session(
+                        await self.core.start(
                             game=GAME_ENUM.get(game_config['name'], 'unknown'),
                             track_name=getattr(self.reader, 'track_name', 'Unknown Track'),
                             car_name=getattr(self.reader, 'car_name', 'Unknown Car'),
                             session_type='practice',
                             metadata={'source': game_config.get('protocol', 'desktop')},
                         )
-                        self._session_active = True
-                        print(f"TelemetryCollector: Streaming session {self.streaming.session_id}")
+                        logger.info(f"TelemetryCollector: Streaming session {self.streaming.session_id}")
 
                         # Live coach (D3): build from the platform turn DB
                         # once we know the track; absent cache -> debriefs only
@@ -242,11 +247,12 @@ class TelemetryCollector(QObject):
                                     getattr(self.reader, 'track_name', 'Unknown Track'),
                                 )
                                 self.coach = LiveCoach(turns, track_length_m=length)
-                                print(f"LiveCoach: armed with {len(turns)} turns")
+                                self.core.coach = self.coach
+                                logger.info(f"LiveCoach: armed with {len(turns)} turns")
                             except Exception as e:
-                                print(f"LiveCoach: unavailable ({e})")
+                                logger.warning(f"LiveCoach: unavailable ({e})")
                     except Exception as e:
-                        print(f"TelemetryCollector: Streaming unavailable ({e}); collecting locally")
+                        logger.warning(f"TelemetryCollector: Streaming unavailable ({e}); collecting locally")
 
                 # Emit signal
                 self.game_connected.emit(game_config['name'])
@@ -254,59 +260,31 @@ class TelemetryCollector(QObject):
                 # Start collection task
                 self._collection_task = asyncio.create_task(self._collect_telemetry())
             else:
-                print(f"TelemetryCollector: Failed to connect to {game_config['name']}")
+                logger.info(f"TelemetryCollector: Failed to connect to {game_config['name']}")
                 self.error_occurred.emit(f"Failed to connect to {game_config['name']}")
 
         except Exception as e:
-            print(f"TelemetryCollector: Error starting collection: {e}")
+            logger.info(f"TelemetryCollector: Error starting collection: {e}")
             self.error_occurred.emit(f"Error: {e}")
 
     async def _on_game_stopped(self):
         """Called when game exits"""
-        print("TelemetryCollector: Game stopped")
+        logger.info("TelemetryCollector: Game stopped")
         await self._stop_collection()
         self.game_disconnected.emit()
 
     async def _collect_telemetry(self):
         """Main telemetry collection loop"""
-        print("TelemetryCollector: Starting telemetry collection...")
+        logger.info("TelemetryCollector: Starting telemetry collection...")
 
         try:
+            track_length = getattr(self.reader, 'track_length', None)
             async for raw_data in self.reader.read_telemetry():
                 if not self._running:
                     break
-
-                # Parse telemetry
-                telemetry = self.parser.parse(raw_data)
-
-                if telemetry and self.parser.validate_data(telemetry):
-                    # Update stats
-                    self.stats.record_frame(telemetry)
-
-                    # Live coach (D3): incremental trigger model; never let
-                    # a coach bug break collection
-                    if self.coach is not None:
-                        try:
-                            from racecraft.coach.live import frame_from_telemetry
-                            import time as _time
-                            cf = frame_from_telemetry(telemetry, _time.monotonic())
-                            if cf is not None:
-                                self.coach.on_frame(cf)
-                        except Exception:
-                            pass
-
-                    # Stream to backend
-                    if self._session_active:
-                        try:
-                            await self.streaming.add_frame(
-                                telemetry,
-                                track_length=getattr(self.reader, 'track_length', None),
-                            )
-                        except Exception as e:
-                            print(f"TelemetryCollector: chunk upload failed: {e}")
-                else:
-                    # Invalid frame, skip
-                    pass
+                # parse → validate → stats hook → coach → stream, all in
+                # the shared SessionCore (headless drives the same path)
+                await self.core.process_raw(raw_data, track_length=track_length)
 
             # Reader ended on its own (sim exited / simulated laps complete)
             await self._finish_session()
@@ -316,21 +294,15 @@ class TelemetryCollector(QObject):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(f"TelemetryCollector: Collection error: {e}")
+            logger.info(f"TelemetryCollector: Collection error: {e}")
             self.error_occurred.emit(f"Collection error: {e}")
 
     async def _finish_session(self):
-        """End the streaming session and submit it for analysis (once)."""
-        if not self._session_active:
-            return
-        self._session_active = False
-        try:
-            await self.streaming.end_session()
-            analysis_id = await self.streaming.submit_for_analysis(
-                "auto-submitted by desktop app")
-            print(f"TelemetryCollector: session submitted for analysis ({analysis_id})")
-        except Exception as e:
-            print(f"TelemetryCollector: session end/submit failed: {e}")
+        """End the streaming session and submit it for analysis (once) —
+        delegated to SessionCore's finish-once semantics."""
+        core = getattr(self, 'core', None)
+        if core is not None:
+            await core.finish()
 
     async def _stop_collection(self):
         """Stop active telemetry collection"""
