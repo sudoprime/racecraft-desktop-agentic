@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Secret-scan pre-commit hook (loop 3, standing rule 4 — the Gemini key
+# shipped in config defaults for months before iteration-0 caught it).
+#
+# Scans STAGED content only (what would actually land in the commit).
+# Zero dependencies: anchored regexes for high-signal credential shapes,
+# so false positives stay rare. Escape hatch for a deliberate fixture:
+#   RACECRAFT_SKIP_SECRET_SCAN=1 git commit ...
+#
+# Wired via:  git config core.hooksPath scripts/githooks
+set -uo pipefail
+
+if [ "${RACECRAFT_SKIP_SECRET_SCAN:-0}" = "1" ]; then
+    echo "secret-scan: SKIPPED via RACECRAFT_SKIP_SECRET_SCAN=1"
+    exit 0
+fi
+
+PATTERNS=(
+    'AIza[0-9A-Za-z_\-]{35}'                  # Google API key
+    'sk-ant-[0-9A-Za-z_\-]{20,}'              # Anthropic API key
+    'AKIA[0-9A-Z]{16}'                        # AWS access key ID
+    'ghp_[0-9A-Za-z]{36}'                     # GitHub PAT (classic)
+    'github_pat_[0-9A-Za-z_]{22,}'            # GitHub PAT (fine-grained)
+    'sk-[0-9A-Za-z]{40,}'                     # OpenAI-style key
+    'xox[baprs]-[0-9A-Za-z\-]{10,}'           # Slack token
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----'      # PEM private key
+    'postgres(ql)?://[^:[:space:]]+:[^@[:space:]]{8,}@'  # DSN with password
+)
+
+FOUND=0
+# Staged, non-deleted files only; skip binaries via grep -I.
+while IFS= read -r -d '' file; do
+    staged=$(git show ":$file" 2>/dev/null) || continue
+    for pat in "${PATTERNS[@]}"; do
+        hits=$(printf '%s' "$staged" | grep -InE -I "$pat" 2>/dev/null | head -3)
+        if [ -n "$hits" ]; then
+            echo "secret-scan: possible credential in staged $file:"
+            echo "$hits" | sed 's/^/    /'
+            FOUND=1
+        fi
+    done
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if [ "$FOUND" -ne 0 ]; then
+    cat >&2 <<'MSG'
+
+COMMIT BLOCKED by secret-scan (scripts/githooks/pre-commit).
+If this is a deliberate fake (test fixture), re-run with:
+    RACECRAFT_SKIP_SECRET_SCAN=1 git commit ...
+MSG
+    exit 1
+fi
+exit 0
