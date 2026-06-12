@@ -27,12 +27,15 @@ PATTERNS=(
     'postgres(ql)?://[^:[:space:]]+:[^@[:space:]]{8,}@'  # DSN with password
 )
 
+# Obvious placeholders (doc examples), not credentials.
+ALLOWLIST='user:pass(word)?@|USER:PASS(WORD)?@|<user(name)?>|\$\{[A-Za-z_]+\}'
+
 FOUND=0
 # Staged, non-deleted files only; skip binaries via grep -I.
 while IFS= read -r -d '' file; do
     staged=$(git show ":$file" 2>/dev/null) || continue
     for pat in "${PATTERNS[@]}"; do
-        hits=$(printf '%s' "$staged" | grep -InE -I "$pat" 2>/dev/null | head -3)
+        hits=$(printf '%s' "$staged" | grep -InE -I "$pat" 2>/dev/null | grep -vE "$ALLOWLIST" | head -3)
         if [ -n "$hits" ]; then
             echo "secret-scan: possible credential in staged $file:"
             echo "$hits" | sed 's/^/    /'
