@@ -150,10 +150,21 @@ class RaceCraftApp:
         self.tray.update_status(f"Error: {error_msg}")
 
     def _on_exit(self):
-        """Clean shutdown"""
+        """Clean shutdown. quit() used to be called in the same tick as
+        create_task(stop()) — the event loop died before stop() ran, so
+        the final chunk flush and session end/submit were silently
+        skipped on every exit (platform loop 3, T3). Quit only AFTER the
+        collector has actually stopped."""
         print("Shutting down RaceCraft Desktop...")
-        asyncio.create_task(self.collector.stop())
-        self.qt_app.quit()
+        asyncio.create_task(self._shutdown())
+
+    async def _shutdown(self):
+        try:
+            await self.collector.stop()
+        except Exception as e:
+            print(f"Shutdown error (continuing to quit): {e}")
+        finally:
+            self.qt_app.quit()
 
 
 def main():
