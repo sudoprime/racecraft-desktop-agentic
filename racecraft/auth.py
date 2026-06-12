@@ -191,7 +191,12 @@ class AuthenticationService:
         )
         if resp.status_code != 200:
             return False
-        self._bearer_token = resp.json()["access_token"]
+        data = resp.json()
+        self._bearer_token = data["access_token"]
+        # The platform rotates refresh tokens (loop 3, S4): each refresh
+        # revokes the presented token and returns its replacement. Keep
+        # the old one only if the server didn't send a new one.
+        self._refresh_token = data.get("refresh_token") or self._refresh_token
         return True
 
     @property
