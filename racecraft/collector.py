@@ -1,6 +1,7 @@
 """Telemetry collection coordinator"""
 
 import asyncio
+import os
 from typing import Optional
 from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
@@ -112,7 +113,12 @@ class TelemetryCollector(QObject):
     game_disconnected = pyqtSignal()
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, streaming=None, test_mode: bool = False):
+    def __init__(self, streaming=None, test_mode: bool = False, coach=None,
+                 coach_enabled: bool = None):
+        self.coach = coach  # LiveCoach (D3) or None
+        # env-gated until the settings UI exposes a toggle (D3 remainder)
+        self._coach_enabled = (coach_enabled if coach_enabled is not None
+                               else os.getenv('RACECRAFT_LIVE_COACH', '0') == '1')
         super().__init__()
 
         self.detector = GameDetector()
@@ -223,6 +229,22 @@ class TelemetryCollector(QObject):
                         )
                         self._session_active = True
                         print(f"TelemetryCollector: Streaming session {self.streaming.session_id}")
+
+                        # Live coach (D3): build from the platform turn DB
+                        # once we know the track; absent cache -> debriefs only
+                        if self._coach_enabled and self.coach is None:
+                            try:
+                                from racecraft.coach.live import LiveCoach, fetch_turns
+                                turns, length = await fetch_turns(
+                                    self.streaming.client,
+                                    self.streaming.api_base_url,
+                                    self.streaming.auth.bearer_token,
+                                    getattr(self.reader, 'track_name', 'Unknown Track'),
+                                )
+                                self.coach = LiveCoach(turns, track_length_m=length)
+                                print(f"LiveCoach: armed with {len(turns)} turns")
+                            except Exception as e:
+                                print(f"LiveCoach: unavailable ({e})")
                     except Exception as e:
                         print(f"TelemetryCollector: Streaming unavailable ({e}); collecting locally")
 
@@ -260,6 +282,18 @@ class TelemetryCollector(QObject):
                 if telemetry and self.parser.validate_data(telemetry):
                     # Update stats
                     self.stats.record_frame(telemetry)
+
+                    # Live coach (D3): incremental trigger model; never let
+                    # a coach bug break collection
+                    if self.coach is not None:
+                        try:
+                            from racecraft.coach.live import frame_from_telemetry
+                            import time as _time
+                            cf = frame_from_telemetry(telemetry, _time.monotonic())
+                            if cf is not None:
+                                self.coach.on_frame(cf)
+                        except Exception:
+                            pass
 
                     # Stream to backend
                     if self._session_active:
