@@ -31,8 +31,12 @@ PATTERNS=(
 ALLOWLIST='user:pass(word)?@|USER:PASS(WORD)?@|<user(name)?>|\$\{[A-Za-z_]+\}|:(password|postgres|changeme|test|example|dev)@'
 
 FOUND=0
-# Staged, non-deleted files only; skip binaries via grep -I.
+# Staged, non-deleted files only.
 while IFS= read -r -d '' file; do
+    # Skip BINARY blobs (PNG screenshots, etc.) — they can't carry a text
+    # credential, and capturing their null bytes into $staged warns under
+    # command substitution. `grep -qI .` is false for binary/empty content.
+    git show ":$file" 2>/dev/null | grep -qI . || continue
     staged=$(git show ":$file" 2>/dev/null) || continue
     for pat in "${PATTERNS[@]}"; do
         hits=$(printf '%s' "$staged" | grep -InE -I "$pat" 2>/dev/null | grep -vE "$ALLOWLIST" | head -3)
