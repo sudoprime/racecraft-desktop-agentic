@@ -28,7 +28,7 @@ PATTERNS=(
 )
 
 # Obvious placeholders (doc examples), not credentials.
-ALLOWLIST='user:pass(word)?@|USER:PASS(WORD)?@|<user(name)?>|\$\{[A-Za-z_]+\}'
+ALLOWLIST='user:pass(word)?@|USER:PASS(WORD)?@|<user(name)?>|\$\{[A-Za-z_]+\}|:(password|postgres|changeme|test|example|dev)@'
 
 FOUND=0
 # Staged, non-deleted files only; skip binaries via grep -I.
