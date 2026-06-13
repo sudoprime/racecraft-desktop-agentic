@@ -1,5 +1,6 @@
 """iRacing telemetry parser"""
 
+import math
 import msgpack
 from typing import Optional
 from datetime import datetime
@@ -19,6 +20,16 @@ class IRacingParser(ITelemetryParser):
 
     def __init__(self):
         self._session_info: Optional[dict] = None
+        # World-position reconstruction state (loop 4, R12). iRacing gives
+        # NO scalar world position in normal play — CarIdxX/Y/Z are
+        # per-car ARRAYS (broadcast only). We integrate the car-frame
+        # velocity (rotated into the world by yaw) over SessionTime, the
+        # documented desktop technique. State is reset on a new session.
+        self._pos_x = 0.0
+        self._pos_y = 0.0
+        self._pos_z = 0.0
+        self._last_session_time: Optional[float] = None
+        self._integ_session_id: Optional[str] = None
 
     def parse(self, raw_data: bytes) -> Optional[NormalizedTelemetry]:
         """Convert iRacing dict to NormalizedTelemetry"""
@@ -81,7 +92,9 @@ class IRacingParser(ITelemetryParser):
                 speed=data.get('Speed', 0.0),
                 gear=data.get('Gear', 0),
                 engine_rpm=data.get('RPM', 0.0),
-                engine_max_rpm=data.get('EngineWarnings', 0),
+                # EngineWarnings is a status BITFIELD, not a redline (loop 4,
+                # R13). iRacing has no realtime max-RPM channel -> honest None.
+                engine_max_rpm=None,
 
                 # Driver inputs (iRacing already 0.0-1.0 normalized)
                 throttle=max(0.0, min(1.0, data.get('Throttle', 0.0))),
@@ -89,12 +102,9 @@ class IRacingParser(ITelemetryParser):
                 clutch=max(0.0, min(1.0, data.get('Clutch', 0.0))),
                 steering=self._normalize_steering(data),
 
-                # Position (iRacing provides world coordinates in meters)
-                position=Vector3(
-                    x=data.get('CarIdxX', 0.0) if isinstance(data.get('CarIdxX'), (int, float)) else 0.0,
-                    y=data.get('CarIdxY', 0.0) if isinstance(data.get('CarIdxY'), (int, float)) else 0.0,
-                    z=data.get('CarIdxZ', 0.0) if isinstance(data.get('CarIdxZ'), (int, float)) else 0.0,
-                ),
+                # Position: reconstructed by velocity integration (R12) —
+                # iRacing exposes no scalar world position in normal play.
+                position=self._integrate_position(data),
                 velocity=Vector3(
                     x=data.get('VelocityX', 0.0),
                     y=data.get('VelocityY', 0.0),
@@ -123,7 +133,9 @@ class IRacingParser(ITelemetryParser):
 
                 # Fuel
                 fuel_remaining=data.get('FuelLevel', 0.0),
-                fuel_capacity=data.get('FuelLevelPct'),
+                # FuelLevelPct is a 0-1 FRACTION, not liters of capacity
+                # (loop 4, R13). Capacity is session-info only -> honest None.
+                fuel_capacity=None,
                 fuel_laps_remaining=None,  # iRacing doesn't provide this directly
 
                 # Session
@@ -142,6 +154,46 @@ class IRacingParser(ITelemetryParser):
             # Log error, return None to skip invalid frame
             print(f"Error parsing iRacing telemetry: {e}")
             return None
+
+    def _integrate_position(self, data: dict) -> Vector3:
+        """Reconstruct world position by integrating car-frame velocity,
+        rotated into the world by yaw, over SessionTime (loop 4, R12).
+
+        iRacing VelocityX/Y/Z are in the CAR's frame (X forward, Y left,
+        Z up). Rotating the planar (X,Y) velocity by yaw and integrating
+        gives a usable 2D track map — the thing curvature turn-detection
+        and the track-map chart need, which the all-zeros bug had silently
+        broken for the primary sim. First frame (and post-reset) anchors
+        at the origin; dt comes from the SessionTime delta, clamped so a
+        pause/teleport can't fling the path."""
+        session_id = str(data.get('SessionUniqueID', 0))
+        if session_id != self._integ_session_id:
+            # new session -> reset the path to the origin
+            self._integ_session_id = session_id
+            self._pos_x = self._pos_y = self._pos_z = 0.0
+            self._last_session_time = None
+
+        st = data.get('SessionTime')
+        if st is None:
+            return Vector3(x=self._pos_x, y=self._pos_y, z=self._pos_z)
+
+        if self._last_session_time is not None:
+            dt = st - self._last_session_time
+            # clamp: ignore non-monotonic jumps and long gaps (pauses,
+            # garage exits) that would otherwise teleport the path
+            if 0.0 < dt <= 1.0:
+                vx = data.get('VelocityX', 0.0) or 0.0   # car-forward (m/s)
+                vy = data.get('VelocityY', 0.0) or 0.0   # car-left (m/s)
+                vz = data.get('VelocityZ', 0.0) or 0.0
+                yaw = data.get('Yaw', 0.0) or 0.0
+                cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+                world_vx = vx * cos_y - vy * sin_y
+                world_vy = vx * sin_y + vy * cos_y
+                self._pos_x += world_vx * dt
+                self._pos_y += world_vy * dt
+                self._pos_z += vz * dt
+        self._last_session_time = st
+        return Vector3(x=self._pos_x, y=self._pos_y, z=self._pos_z)
 
     def parse_metadata(self, raw_data: bytes) -> Optional[TelemetryMetadata]:
         """Extract iRacing session info from YAML"""

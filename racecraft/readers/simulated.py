@@ -166,8 +166,13 @@ class SimulatedReader(ITelemetryReader):
             "CarIdxX": radius * math.sin(angle),
             "CarIdxY": radius * math.cos(angle),
             "CarIdxZ": 30.0,
-            "VelocityX": self._speed * math.cos(heading),
-            "VelocityY": self._speed * math.sin(heading),
+            # CAR-frame velocity to match the real iRacing SDK (X=forward,
+            # Y=left): the parser integrates this rotated by Yaw to
+            # reconstruct world position (loop 4, R12). Emitting world-frame
+            # here would double-apply the rotation. A clean lap = pure
+            # forward motion, so VelocityY (lateral slip) ~ 0.
+            "VelocityX": self._speed,
+            "VelocityY": 0.0,
             "VelocityZ": 0.0,
             "LatAccel": g_lat,
             "LongAccel": g_long,
