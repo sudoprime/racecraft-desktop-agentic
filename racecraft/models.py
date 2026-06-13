@@ -41,9 +41,21 @@ class WheelData(BaseModel):
     slip_ratio: Optional[float] = None  # percentage
     slip_angle: Optional[float] = None  # radians
 
+    # Contact patch / suspension geometry (loop 4, V depth — additive,
+    # populated where the sim's SDK exposes it; absent => None, never 0)
+    camber: Optional[float] = None  # radians
+    toe: Optional[float] = None  # radians
+    wheel_load: Optional[float] = None  # N (vertical tire load)
+    lateral_force: Optional[float] = None  # N (tire lateral force)
+    longitudinal_force: Optional[float] = None  # N (tire longitudinal force)
+    ride_height: Optional[float] = None  # meters
+
     # Wear
     tire_wear: Optional[float] = None  # 0.0-1.0 (0=new, 1=worn)
     brake_wear: Optional[float] = None  # 0.0-1.0
+
+    # Compound (per-wheel where the sim reports it; usually uniform)
+    tire_compound: Optional[str] = None
 
 
 class NormalizedTelemetry(BaseModel):
@@ -92,6 +104,32 @@ class NormalizedTelemetry(BaseModel):
     fuel_remaining: Optional[float] = None  # liters
     fuel_capacity: Optional[float] = None  # liters
     fuel_laps_remaining: Optional[float] = None
+    fuel_pressure: Optional[float] = None  # kPa
+
+    # Engine/powertrain (loop 4, V depth — additive; absent => None)
+    engine_water_temp: Optional[float] = None  # Celsius
+    engine_oil_temp: Optional[float] = None  # Celsius
+    engine_oil_pressure: Optional[float] = None  # kPa
+    turbo_boost: Optional[float] = None  # kPa (gauge)
+
+    # Controls / aids
+    steering_torque: Optional[float] = None  # Nm (steering shaft / FFB)
+    brake_bias: Optional[float] = None  # 0.0-1.0 fraction to the FRONT axle
+    drs_state: Optional[int] = None  # 0=off, 1=available, 2=active (sim-relative)
+    ers_deploy_mode: Optional[int] = None  # sim-relative deployment mode
+    ers_pct: Optional[float] = None  # 0.0-1.0 battery/charge fraction
+    tc_active: Optional[bool] = None  # traction control currently intervening
+    tc_level: Optional[int] = None  # TC setting (sim-relative)
+    abs_active: Optional[bool] = None  # ABS currently intervening
+    abs_level: Optional[int] = None  # ABS setting (sim-relative)
+
+    # Damage — per-area 0.0-1.0 (0=none, 1=destroyed); keys are sim-relative
+    # (e.g. {"engine":.., "aero":.., "suspension":..}). None when unavailable.
+    damage: Optional[dict] = None
+
+    # Conditions (Celsius); None when the sim doesn't expose them
+    air_temp: Optional[float] = None
+    track_temp: Optional[float] = None
 
     # Session info
     lap_number: Optional[int] = None

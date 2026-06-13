@@ -234,6 +234,17 @@ def _cstr(field) -> str:
     return bytes(field).split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
 
 
+def _ams2_damage(shm) -> Optional[dict]:
+    """AMS2 aero/engine damage (0-1 floats) + crash flag (loop 4, V depth).
+    None when there's no damage at all."""
+    aero = float(shm.mAeroDamage)
+    engine = float(shm.mEngineDamage)
+    crash = int(shm.mCrashState)
+    if not (aero or engine or crash):
+        return None
+    return {"aero": aero, "engine": engine, "crash_state": crash}
+
+
 def _shm(raw: bytes) -> Optional[SharedMemory]:
     if raw is None or len(raw) < ctypes.sizeof(SharedMemory):
         return None
@@ -271,6 +282,10 @@ class AMS2Parser(ITelemetryParser):
                     suspension_travel=float(shm.mSuspensionTravel[i]),
                     wheel_speed=float(shm.mTyreRPS[i]),
                     tire_wear=float(shm.mTyreWear[i]),
+                    # V depth (loop 4): AMS2 exposes per-wheel ride height +
+                    # compound (no per-wheel camber/forces in PC2 shm).
+                    ride_height=float(shm.mRideHeight[i]),  # m
+                    tire_compound=_cstr(shm.mTyreCompound[i]) or None,
                 ))
 
             lap_fraction = None
@@ -333,6 +348,24 @@ class AMS2Parser(ITelemetryParser):
                 lap_time_best=float(shm.mBestLapTime) if shm.mBestLapTime > 0 else None,
                 in_pit=int(shm.mPitMode) != 0,
                 is_racing=int(shm.mGameState) == GAME_INGAME_PLAYING,
+                # V depth (loop 4): PC2/AMS2 vehicle-level channels. Native
+                # units; magnitudes rig-deferred (owner rule 10). turbo_boost
+                # is AMS2-native (pressure units cross-sim-unverified).
+                engine_water_temp=float(shm.mWaterTempCelsius) or None,  # C
+                engine_oil_temp=float(shm.mOilTempCelsius) or None,  # C
+                engine_oil_pressure=float(shm.mOilPressureKPa) or None,  # kPa
+                fuel_pressure=float(shm.mFuelPressureKPa) or None,  # kPa
+                turbo_boost=float(shm.mTurboBoostPressure) or None,
+                brake_bias=(float(shm.mBrakeBias)
+                            if 0.0 < shm.mBrakeBias <= 1.0 else None),  # front frac
+                drs_state=int(shm.mDrsState),
+                ers_deploy_mode=int(shm.mErsDeploymentMode),
+                abs_active=bool(shm.mAntiLockActive),
+                abs_level=int(shm.mAntiLockSetting),
+                tc_level=int(shm.mTractionControlSetting),
+                damage=_ams2_damage(shm),
+                air_temp=float(shm.mAmbientTemperature) or None,
+                track_temp=float(shm.mTrackTemperature) or None,
             )
         except Exception:
             return None

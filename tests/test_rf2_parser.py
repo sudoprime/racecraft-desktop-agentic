@@ -48,6 +48,18 @@ def _vehicle_telemetry(slot_id: int) -> rF2VehicleTelemetry:
     v.mLocalAccel.x, v.mLocalAccel.y, v.mLocalAccel.z = 9.8, 0.0, -19.6
     v.mFuel = 33.0
     v.mFuelCapacity = 70.0
+    # V depth (loop 4) vehicle-level channels
+    v.mEngineWaterTemp = 95.0
+    v.mEngineOilTemp = 110.0
+    v.mSteeringShaftTorque = 12.5
+    v.mRearBrakeBias = 0.45           # -> front bias 0.55
+    v.mTurboBoostPressure = 150000.0  # Pa -> 150 kPa
+    v.mRearFlapActivated = 1          # DRS active
+    v.mBatteryChargeFraction = 0.6
+    v.mElectricBoostMotorState = 2
+    v.mFrontTireCompoundName = b"Soft"
+    v.mRearTireCompoundName = b"Medium"
+    v.mDentSeverity[0] = 2            # one panel fully dented -> overall 1.0
     for i in range(4):
         w = v.mWheels[i]
         w.mBrakeTemp = 410.0
@@ -57,6 +69,13 @@ def _vehicle_telemetry(slot_id: int) -> rF2VehicleTelemetry:
         w.mTemperature[2] = 86.0 + KELVIN
         w.mWear = 0.95                # 1.0 = fresh
         w.mSuspensionDeflection = 0.05
+        # V depth contact-patch + geometry
+        w.mCamber = -0.03
+        w.mToe = 0.01
+        w.mTireLoad = 3200.0
+        w.mLateralForce = 1500.0
+        w.mLongitudinalForce = -200.0
+        w.mRideHeight = 0.06
     return v
 
 
@@ -136,6 +155,34 @@ def test_wheel_units():
     assert abs(w.tire_inner_temp - 90.0) < 1e-6        # K -> C, left
     assert abs(w.tire_outer_temp - 86.0) < 1e-6
     assert abs(w.tire_wear - 0.05) < 1e-6              # inverted
+
+
+def test_v_depth_channels_populate():
+    """V depth (loop 4): the newly-forwarded rF2 channels reach the model
+    with the right DERIVATION (unit conversion / front-vs-rear flip / damage
+    normalisation). This pins plumbing+derivation, NOT real-world axis/sign
+    correctness — that's the post-loop on-rig session (owner rule 10)."""
+    t = RF2Parser().parse(make_frame())
+    # per-wheel contact patch / geometry
+    fl = t.wheels[0]
+    assert fl.camber == -0.03
+    assert fl.toe == 0.01
+    assert fl.wheel_load == 3200.0
+    assert fl.lateral_force == 1500.0
+    assert fl.longitudinal_force == -200.0
+    assert fl.ride_height == 0.06
+    # compound: front pair "Soft", rears "Medium"
+    assert [w.tire_compound for w in t.wheels] == ["Soft", "Soft", "Medium", "Medium"]
+    # vehicle-level
+    assert t.engine_water_temp == 95.0
+    assert t.engine_oil_temp == 110.0
+    assert t.steering_torque == 12.5
+    assert abs(t.brake_bias - 0.55) < 1e-9          # 1 - rear 0.45
+    assert abs(t.turbo_boost - 150.0) < 1e-9        # 150000 Pa -> 150 kPa
+    assert t.drs_state == 1
+    assert abs(t.ers_pct - 0.6) < 1e-9
+    assert t.ers_deploy_mode == 2
+    assert t.damage and t.damage["overall"] == 1.0
 
 
 def test_no_player_returns_none():

@@ -58,6 +58,25 @@ def make_page(**overrides) -> bytes:
         shm.mTyreTempLeft[i] = 80.0
         shm.mTyreTempCenter[i] = 78.0
         shm.mTyreTempRight[i] = 76.0
+        # V depth (loop 4): per-wheel ride height + compound
+        shm.mRideHeight[i] = 0.055
+        shm.mTyreCompound[i].value = b"Medium"   # 2D char array -> set .value
+    # V depth vehicle-level channels
+    shm.mWaterTempCelsius = 96.0
+    shm.mOilTempCelsius = 112.0
+    shm.mOilPressureKPa = 480.0
+    shm.mFuelPressureKPa = 300.0
+    shm.mTurboBoostPressure = 1.2
+    shm.mBrakeBias = 0.58            # front fraction (PC2 native)
+    shm.mDrsState = 1
+    shm.mErsDeploymentMode = 3
+    shm.mAntiLockActive = True
+    shm.mAntiLockSetting = 4
+    shm.mTractionControlSetting = 2
+    shm.mAeroDamage = 0.25
+    shm.mEngineDamage = 0.1
+    shm.mAmbientTemperature = 24.0
+    shm.mTrackTemperature = 31.0
     shm.mSequenceNumber = 12      # even = consistent
     shm.mPitMode = 0
     for k, v in overrides.items():
@@ -79,6 +98,32 @@ def test_parse_normalizes_core_channels():
     assert abs(t.g_force_lateral - 14.7 / G) < 1e-4
     assert abs(t.fuel_remaining - 45.0) < 1e-4            # fraction * capacity
     assert t.is_racing is True and t.in_pit is False
+
+
+def test_v_depth_channels_populate():
+    """V depth (loop 4): the newly-forwarded AMS2 channels reach the model.
+    Pins plumbing/derivation (per-wheel ride height + compound, engine/brake/
+    aids/weather/damage), NOT real-world axis/sign correctness — that's the
+    post-loop on-rig session (owner rule 10)."""
+    t = AMS2Parser().parse(make_page())
+    # per-wheel
+    assert all(abs(w.ride_height - 0.055) < 1e-6 for w in t.wheels)
+    assert all(w.tire_compound == "Medium" for w in t.wheels)
+    # vehicle-level
+    assert t.engine_water_temp == 96.0
+    assert t.engine_oil_temp == 112.0
+    assert t.engine_oil_pressure == 480.0
+    assert t.fuel_pressure == 300.0
+    assert abs(t.brake_bias - 0.58) < 1e-6
+    assert t.drs_state == 1
+    assert t.ers_deploy_mode == 3
+    assert t.abs_active is True and t.abs_level == 4
+    assert t.tc_level == 2
+    assert t.damage is not None
+    assert abs(t.damage["aero"] - 0.25) < 1e-6
+    assert abs(t.damage["engine"] - 0.1) < 1e-6
+    assert t.damage["crash_state"] == 0
+    assert t.air_temp == 24.0 and t.track_temp == 31.0
 
 
 def test_wheels_psi_to_bar_and_temps():

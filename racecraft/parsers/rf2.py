@@ -309,6 +309,16 @@ def _cstr(field) -> str:
     return bytes(field).split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
 
 
+def _rf2_damage(tel) -> Optional[dict]:
+    """rF2 body damage from mDentSeverity[8] (0/1/2 per panel). Normalised
+    to the schema's 0-1 scale: per-panel list + an overall max (loop 4, V
+    depth). None when there's no dent data at all."""
+    dents = [int(d) for d in tel.mDentSeverity]
+    if not any(dents):
+        return None
+    return {"dent_severity": dents, "overall": max(dents) / 2.0}
+
+
 class RF2Parser(ITelemetryParser):
     """Parses msgpack frames of {'telemetry','scoring'} raw page bytes."""
 
@@ -334,6 +344,11 @@ class RF2Parser(ITelemetryParser):
             if tel is None or sco is None:
                 return None
 
+            # Compound names: front pair share mFrontTireCompoundName, rears
+            # the rear name (loop 4, V depth).
+            front_compound = _cstr(tel.mFrontTireCompoundName) or None
+            rear_compound = _cstr(tel.mRearTireCompoundName) or None
+
             wheels = []
             for i, pos in enumerate(_WHEEL_ORDER):
                 w = tel.mWheels[i]
@@ -350,6 +365,15 @@ class RF2Parser(ITelemetryParser):
                     suspension_travel=float(w.mSuspensionDeflection),
                     wheel_speed=float(w.mRotation),
                     tire_wear=1.0 - float(w.mWear),  # mWear: 1.0 = fresh
+                    # V depth (loop 4): contact-patch + geometry, all rF2-native
+                    # units. Axis/sign correctness is rig-deferred (owner rule 10).
+                    camber=float(w.mCamber),  # radians
+                    toe=float(w.mToe),  # radians
+                    wheel_load=float(w.mTireLoad) or None,  # N
+                    lateral_force=float(w.mLateralForce),  # N
+                    longitudinal_force=float(w.mLongitudinalForce),  # N
+                    ride_height=float(w.mRideHeight),  # m
+                    tire_compound=(front_compound if i < 2 else rear_compound),
                 ))
 
             speed = math.sqrt(tel.mLocalVel.x ** 2 + tel.mLocalVel.y ** 2
@@ -400,6 +424,23 @@ class RF2Parser(ITelemetryParser):
                 lap_time_best=float(sco.mBestLapTime) if sco.mBestLapTime > 0 else None,
                 in_pit=bool(sco.mInPits),
                 is_racing=bool(info.mInRealtime) if info else True,
+                # V depth (loop 4): vehicle-level channels rF2 exposes but
+                # we never forwarded. rF2-native units; magnitudes/signs are
+                # rig-deferred (owner rule 10) — these tests assert derivation,
+                # not real-world correctness.
+                engine_water_temp=float(tel.mEngineWaterTemp) or None,  # C
+                engine_oil_temp=float(tel.mEngineOilTemp) or None,  # C
+                steering_torque=float(tel.mSteeringShaftTorque),  # Nm
+                # rF2 reports the REAR bias fraction; the schema wants FRONT.
+                brake_bias=(1.0 - float(tel.mRearBrakeBias)
+                            if 0.0 < tel.mRearBrakeBias < 1.0 else None),
+                turbo_boost=(float(tel.mTurboBoostPressure) / 1000.0
+                             if tel.mTurboBoostPressure else None),  # Pa->kPa
+                drs_state=int(tel.mRearFlapActivated),  # 0=off, 1=active
+                ers_pct=(float(tel.mBatteryChargeFraction)
+                         if tel.mBatteryChargeFraction else None),  # 0..1
+                ers_deploy_mode=int(tel.mElectricBoostMotorState),
+                damage=_rf2_damage(tel),
             )
         except Exception:
             return None
