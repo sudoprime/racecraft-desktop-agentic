@@ -36,6 +36,9 @@ async def run_test_session(api_url: str, email: str, password: str,
     if not creds:
         print("FAIL: authentication")
         return 1
+    # remote logs/crashes carry the user once authed (loop 4, M)
+    from racecraft.remote_log import set_token_getter
+    set_token_getter(lambda: auth.bearer_token)
 
     reader = SimulatedReader(update_rate=hz, laps=laps, time_scale=time_scale)
     parser = IRacingParser()

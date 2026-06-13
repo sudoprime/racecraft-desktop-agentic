@@ -60,6 +60,9 @@ class RaceCraftApp:
 
         # Create services
         self.auth = AuthenticationService(args.api_url)
+        # Remote logs/crashes after login carry the user (loop 4, M)
+        from racecraft.remote_log import set_token_getter
+        set_token_getter(lambda: self.auth.bearer_token)
         self.streaming = StreamingClient(args.api_url, self.auth)
         self.collector = TelemetryCollector(streaming=self.streaming,
                                             test_mode=args.test)
@@ -177,6 +180,12 @@ def main():
     """Main entry point"""
     setup_logging()
     args = parse_args()
+
+    # Remote log + crash reporting -> backend (loop 4, M). Installed early
+    # so startup crashes are reported too; the token-getter is wired once
+    # auth exists. Anonymous until then (the backend labels it).
+    from racecraft.remote_log import install_remote_logging
+    install_remote_logging(args.api_url)
 
     if args.headless:
         # No Qt at all — run one simulated session and exit
