@@ -159,6 +159,24 @@ class IRacingParser(ITelemetryParser):
                 in_pit=data.get('OnPitRoad', False),
                 is_racing=data.get('IsOnTrack', True),
 
+                # V depth (loop 4): vehicle-level channels iRacing exposes in
+                # realtime telemetry. Populated only when present (flat-dict
+                # source). Per-wheel camber/load/force + ride height are NOT in
+                # iRacing realtime telemetry (setup-only) -> honest absence.
+                # Pressure units are sim-native and rig-unverified (rule 10).
+                engine_water_temp=data.get('WaterTemp'),  # C
+                engine_oil_temp=data.get('OilTemp'),  # C
+                engine_oil_pressure=data.get('OilPress'),  # sim-native
+                fuel_pressure=data.get('FuelPress'),  # sim-native
+                steering_torque=data.get('SteeringWheelTorque'),  # Nm
+                # dcBrakeBias is the in-car bias number (usually % to front);
+                # normalise a >1.5 value to a 0-1 fraction (rig-unverified).
+                brake_bias=self._brake_bias(data.get('dcBrakeBias')),
+                drs_state=(int(data['DRS_Status'])
+                           if data.get('DRS_Status') is not None else None),
+                air_temp=data.get('AirTemp'),  # C
+                track_temp=data.get('TrackTempCrew', data.get('TrackTemp')),  # C
+
                 raw_data=data  # Preserve full iRacing data
             )
         except Exception as e:
@@ -234,6 +252,20 @@ class IRacingParser(ITelemetryParser):
             return False
 
         return True
+
+    @staticmethod
+    def _brake_bias(raw) -> Optional[float]:
+        """Normalise iRacing's dcBrakeBias to a 0-1 front fraction (loop 4,
+        V depth). Cars report it as a percentage-to-front (e.g. 54.0); a
+        value >1.5 is treated as a percentage and divided by 100. None when
+        absent. Real-world correctness is rig-deferred (owner rule 10)."""
+        if raw is None:
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return v / 100.0 if v > 1.5 else v
 
     def _get_tire_temp(self, data: dict, wheel: str) -> Optional[float]:
         """Get average tire temperature for a wheel"""

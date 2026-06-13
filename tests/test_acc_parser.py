@@ -44,8 +44,20 @@ def make_frame(**overrides):
         phys.brakeTemp[i] = 300.0 + 10 * i
         phys.suspensionTravel[i] = 0.02
         phys.wheelSlip[i] = 0.05
+        # V depth (loop 4)
+        phys.camberRAD[i] = -0.04
+        phys.wheelLoad[i] = 2800.0 + i
     phys.fuel = 41.5
     phys.heading, phys.pitch, phys.roll = 1.1, 0.01, -0.02
+    # V depth: ride height [front, rear], aids, ers, damage, conditions
+    phys.rideHeight[0], phys.rideHeight[1] = 0.05, 0.06
+    phys.drs = 0.0
+    phys.tc = 0.3            # >0 => TC intervening
+    phys.abs = 0.0
+    phys.kersCharge = 0.7
+    phys.airTemp, phys.roadTemp = 23.0, 29.5
+    phys.carDamage[0] = 0.2   # front
+    phys.carDamage[4] = 0.05  # centre
 
     gfx = GraphicsPage()
     gfx.packetId = 42
@@ -61,6 +73,7 @@ def make_frame(**overrides):
     gfx.carCoordinates[1][0] = 101.5
     gfx.carCoordinates[1][1] = 2.0
     gfx.carCoordinates[1][2] = -340.25
+    _wset(gfx.tyreCompound, "dry_compound")   # V depth (loop 4)
 
     static = StaticPage()
     static.maxRpm = 7200
@@ -129,6 +142,29 @@ class TestACCParserConformance:
         assert md.player_name == "Max Mustermann"
         assert md.track_length == pytest.approx(5200.0)
         assert md.session_type == "Practice"
+
+    def test_v_depth_channels_populate(self):
+        """V depth (loop 4): ACC physics-page channels reach the model.
+        Plumbing/derivation only — axis/sign correctness is rig-deferred
+        (owner rule 10)."""
+        t = ACCParser().parse(make_frame())
+        # per-wheel
+        assert t.wheels[0].camber == pytest.approx(-0.04)
+        assert t.wheels[1].wheel_load == pytest.approx(2801.0)
+        # rideHeight is [front, rear]: FL/FR -> front 0.05, RL/RR -> rear 0.06
+        assert t.wheels[0].ride_height == pytest.approx(0.05)
+        assert t.wheels[2].ride_height == pytest.approx(0.06)
+        assert all(w.tire_compound == "dry_compound" for w in t.wheels)
+        # vehicle-level
+        assert t.ers_pct == pytest.approx(0.7)
+        assert t.tc_active is True       # tc=0.3 > 0
+        assert t.abs_active is False     # abs=0.0
+        assert t.drs_state == 0
+        assert t.air_temp == pytest.approx(23.0)
+        assert t.track_temp == pytest.approx(29.5)
+        assert t.damage is not None
+        assert t.damage["front"] == pytest.approx(0.2)
+        assert t.damage["centre"] == pytest.approx(0.05)
 
     def test_garbage_returns_none(self):
         p = ACCParser()

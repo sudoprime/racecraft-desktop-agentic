@@ -53,6 +53,16 @@ def _wstr(field) -> str:
     return text.split("\x00", 1)[0]
 
 
+def _acc_damage(phys) -> Optional[dict]:
+    """ACC carDamage[5] = [front, rear, left, right, centre] (loop 4, V
+    depth). Returns a labelled dict, or None when undamaged."""
+    d = [float(x) for x in phys.carDamage]
+    if not any(d):
+        return None
+    return {"front": d[0], "rear": d[1], "left": d[2], "right": d[3],
+            "centre": d[4]}
+
+
 class PhysicsPage(ctypes.LittleEndianStructure):
     _pack_ = 4
     _fields_ = [
@@ -226,6 +236,7 @@ class ACCParser(ITelemetryParser):
             except (ValueError, IndexError):
                 pass
 
+            compound = _wstr(gfx.tyreCompound) or None
             wheels = []
             for i, pos in enumerate(_WHEEL_ORDER):
                 core = float(phys.tyreCoreTemperature[i]) or None
@@ -241,6 +252,12 @@ class ACCParser(ITelemetryParser):
                     wheel_speed=float(phys.wheelAngularSpeed[i]),
                     slip_ratio=float(phys.wheelSlip[i]),
                     tire_wear=float(phys.tyreWear[i]),
+                    # V depth (loop 4): ACC physics page exposes these.
+                    # rideHeight is [front, rear] -> i<2 is front.
+                    camber=float(phys.camberRAD[i]),  # radians
+                    wheel_load=float(phys.wheelLoad[i]),  # N
+                    ride_height=float(phys.rideHeight[0 if i < 2 else 1]),  # m
+                    tire_compound=compound,
                 ))
 
             self._frame += 1
@@ -285,6 +302,16 @@ class ACCParser(ITelemetryParser):
                 lap_time_best=float(gfx.iBestTime) / 1000.0 if gfx.iBestTime > 0 else None,
                 in_pit=bool(gfx.isInPit or gfx.isInPitLane),
                 is_racing=int(gfx.status) == ACC_STATUS_LIVE,
+                # V depth (loop 4): ACC vehicle-level channels (all from the
+                # physics page; no engine water/oil temp or brakeBias in the
+                # ACC shared-memory struct -> honest absence).
+                drs_state=int(phys.drs),  # 0/1 (GT3 has no DRS; stays 0)
+                ers_pct=float(phys.kersCharge),  # 0..1
+                tc_active=bool(phys.tc > 0.0),  # tc = realtime cut amount
+                abs_active=bool(phys.abs > 0.0),  # abs = realtime cut amount
+                damage=_acc_damage(phys),
+                air_temp=float(phys.airTemp) or None,
+                track_temp=float(phys.roadTemp) or None,
             )
         except Exception:
             return None

@@ -116,3 +116,34 @@ def test_offtrack_flag_parsed():
     off = p.parse(make_iracing_frame(IsOnTrack=False))
     assert on.is_racing is True
     assert off.is_racing is False
+
+
+def test_v_depth_channels_populate():
+    """V depth (loop 4): iRacing realtime vehicle channels reach the model.
+    iRacing exposes no per-wheel camber/load/force/ride-height in realtime
+    telemetry (setup-only) -> those stay None (honest absence). dcBrakeBias
+    normalises to a 0-1 front fraction. Derivation only; real-world
+    correctness is rig-deferred (owner rule 10)."""
+    p = IRacingParser()
+    t = p.parse(make_iracing_frame(
+        WaterTemp=95.0, OilTemp=110.0, OilPress=3.5, FuelPress=4.1,
+        SteeringWheelTorque=18.0, dcBrakeBias=54.0, DRS_Status=1,
+        AirTemp=21.0, TrackTempCrew=33.0))
+    assert t.engine_water_temp == 95.0
+    assert t.engine_oil_temp == 110.0
+    assert t.engine_oil_pressure == 3.5
+    assert t.fuel_pressure == 4.1
+    assert t.steering_torque == 18.0
+    assert t.brake_bias == 0.54           # 54.0% -> 0.54 front fraction
+    assert t.drs_state == 1
+    assert t.air_temp == 21.0
+    assert t.track_temp == 33.0
+    # iRacing has no realtime per-wheel camber/load -> honest None
+    assert t.wheels[0].camber is None
+    assert t.wheels[0].wheel_load is None
+
+
+def test_brake_bias_passthrough_when_already_fraction():
+    p = IRacingParser()
+    t = p.parse(make_iracing_frame(dcBrakeBias=0.52))
+    assert t.brake_bias == 0.52           # already a fraction -> unchanged
