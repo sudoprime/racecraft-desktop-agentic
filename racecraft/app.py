@@ -115,6 +115,13 @@ class RaceCraftApp:
             })
             self.tray.update_status("Authenticated")
             logger.info(f"Authenticated as user: {credentials.user_id}")
+            # recover chunks from any prior crashed session (loop 4, R14)
+            try:
+                n = await self.streaming.recover_orphan_sessions()
+                if n:
+                    logger.info(f"Recovered {n} crashed session(s) from the spool")
+            except Exception as e:
+                logger.warning(f"Orphan recovery skipped: {e}")
         else:
             self.main_window.update_auth_status({"authorized": False})
             self.tray.update_status("Not authenticated")

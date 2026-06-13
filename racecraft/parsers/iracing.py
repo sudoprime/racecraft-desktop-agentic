@@ -39,6 +39,14 @@ class IRacingParser(ITelemetryParser):
         try:
             data = msgpack.unpackb(raw_data)
 
+            # Reject anything that isn't a real iRacing frame (loop 4, D):
+            # the flat-dict format means an empty/garbage dict would
+            # otherwise yield an all-defaults "stationary" frame that
+            # passes the validators. Require at least one core channel.
+            if not isinstance(data, dict) or not any(
+                    k in data for k in ("SessionTick", "Speed", "RPM", "Lap")):
+                return None
+
             # iRacing wheel data indices: LF=0, RF=1, LR=2, RR=3
             # Map to our standard: FL, FR, RL, RR
             wheels = [

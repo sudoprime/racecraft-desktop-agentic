@@ -38,6 +38,12 @@ class StreamingClient:
         self.spool_dir = Path(spool_dir or os.path.join(
             os.path.expanduser("~"), ".racecraft", "spool"))
         self.upload_attempts = max(1, upload_attempts)
+        # Spool disk caps (loop 4, R14): orphaned dirs from crashed
+        # sessions used to accumulate forever. Reclaim bounds total bytes
+        # (oldest-evicted) and deletes orphans past an age.
+        self.spool_max_bytes = int(os.getenv("RACECRAFT_SPOOL_MAX_BYTES",
+                                             str(200 * 1024 * 1024)))
+        self.spool_max_age_days = float(os.getenv("RACECRAFT_SPOOL_MAX_AGE_DAYS", "7"))
 
         self.session_id: Optional[str] = None
         self.analysis_id: Optional[str] = None
@@ -46,6 +52,9 @@ class StreamingClient:
         self._chunks_uploaded = 0
         self._session_start = None  # datetime of first frame (virtual clock base)
         self._upload_lock = asyncio.Lock()
+
+        # bound the spool now that session_id exists (loop 4, R14)
+        self.reclaim_spool()
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.auth.bearer_token}"}
@@ -211,12 +220,117 @@ class StreamingClient:
                 resp = await self.client.post(url, headers=self._headers(), **kw)
         return resp
 
+    # -- spool disk management + crash recovery (loop 4, R14) -----------
+
+    def _spool_dir_bytes(self, d) -> int:
+        return sum(f.stat().st_size for f in d.glob("chunk_*.json.gz")
+                   if f.is_file())
+
+    def reclaim_spool(self) -> None:
+        """Bound the spool on disk (called at startup; filesystem-only, no
+        network). Deletes orphaned session dirs older than
+        spool_max_age_days, then evicts oldest dirs until the total is
+        under spool_max_bytes. Never touches the ACTIVE session's dir."""
+        try:
+            if not self.spool_dir.is_dir():
+                return
+            import time as _time
+            now = _time.time()
+            dirs = [d for d in self.spool_dir.iterdir()
+                    if d.is_dir() and d.name != str(self.session_id)]
+            for d in dirs:
+                try:
+                    age_days = (now - d.stat().st_mtime) / 86400.0
+                    if age_days > self.spool_max_age_days:
+                        self._rmtree(d)
+                except OSError:
+                    pass
+            dirs = [d for d in self.spool_dir.iterdir()
+                    if d.is_dir() and d.name != str(self.session_id)]
+            dirs.sort(key=lambda d: d.stat().st_mtime)
+            total = sum(self._spool_dir_bytes(d) for d in dirs)
+            for d in dirs:
+                if total <= self.spool_max_bytes:
+                    break
+                total -= self._spool_dir_bytes(d)
+                logger.warning(f"StreamingClient: evicting spooled session "
+                               f"{d.name} to stay under the spool byte cap")
+                self._rmtree(d)
+        except Exception as e:
+            logger.warning(f"StreamingClient: spool reclaim failed: {e}")
+
+    @staticmethod
+    def _rmtree(d) -> None:
+        for f in d.glob("*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+    async def recover_orphan_sessions(self) -> int:
+        """Best-effort recovery of chunks from CRASHED prior sessions
+        (loop 4, R14). For each orphaned spool dir, RESUME that session
+        (its chunks can only go to its own session_id), upload the spooled
+        chunks, then end + submit. On any failure the dir is left for
+        reclaim. Requires auth — call after login. Returns sessions
+        recovered."""
+        if not self.spool_dir.is_dir():
+            return 0
+        recovered = 0
+        for d in list(self.spool_dir.iterdir()):
+            if not d.is_dir() or d.name == str(self.session_id):
+                continue
+            chunks = sorted(d.glob("chunk_*.json.gz"))
+            if not chunks:
+                self._rmtree(d)
+                continue
+            sid = d.name
+            try:
+                resp = await self._authed_post(
+                    f"{self.api_base_url}/api/streaming/session/resume",
+                    json={"session_id": sid})
+                if resp.status_code != 200:
+                    logger.info(f"StreamingClient: orphan {sid} not resumable "
+                                f"({resp.status_code}); leaving for reclaim")
+                    continue
+                analysis_id = resp.json().get("analysis_id")
+                for path in chunks:
+                    n = int(path.stem.split("_")[1].split(".")[0])
+                    await self._upload_chunk_payload(n, path.read_bytes(),
+                                                     session_id=sid)
+                    path.unlink()
+                await self._authed_post(
+                    f"{self.api_base_url}/api/streaming/session/end",
+                    json={"session_id": sid})
+                if analysis_id:
+                    await self._authed_post(
+                        f"{self.api_base_url}/api/streaming/session/analyze",
+                        json={"analysis_id": analysis_id,
+                              "notes": "recovered after a desktop crash"})
+                self._rmtree(d)
+                recovered += 1
+                logger.info(f"StreamingClient: recovered orphaned session {sid} "
+                            f"({len(chunks)} chunks)")
+            except Exception as e:
+                logger.warning(f"StreamingClient: orphan {sid} recovery failed "
+                               f"({e}); leaving for reclaim")
+        return recovered
+
     def _spool_path(self, chunk_number: int) -> Path:
         return (self.spool_dir / str(self.session_id)
                 / f"chunk_{chunk_number:06d}.json.gz")
 
-    async def _upload_chunk_payload(self, chunk_number: int, payload: bytes) -> None:
-        """One chunk upload with bounded retries; raises on final failure."""
+    async def _upload_chunk_payload(self, chunk_number: int, payload: bytes,
+                                    session_id: Optional[str] = None) -> None:
+        """One chunk upload with bounded retries; raises on final failure.
+        session_id defaults to the active session, but recovery targets an
+        ORPHAN's own session (loop 4, R14) — a spooled chunk can only go to
+        the session it belongs to, never a new one."""
+        sid = session_id or self.session_id
         checksum = hashlib.md5(payload).hexdigest()
         last_exc = None
         for attempt in range(self.upload_attempts):
@@ -224,7 +338,7 @@ class StreamingClient:
                 resp = await self._authed_post(
                     f"{self.api_base_url}/api/streaming/chunk/upload",
                     data={
-                        "session_id": self.session_id,
+                        "session_id": sid,
                         "chunk_number": str(chunk_number),
                         "checksum": checksum,
                     },

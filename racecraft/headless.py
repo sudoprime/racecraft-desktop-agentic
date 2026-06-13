@@ -39,6 +39,13 @@ async def run_test_session(api_url: str, email: str, password: str,
     # remote logs/crashes carry the user once authed (loop 4, M)
     from racecraft.remote_log import set_token_getter
     set_token_getter(lambda: auth.bearer_token)
+    # recover chunks from any prior crashed session (loop 4, R14)
+    try:
+        n = await streaming.recover_orphan_sessions()
+        if n:
+            print(f"Recovered {n} crashed session(s) from the spool")
+    except Exception as e:
+        print(f"Orphan recovery skipped: {e}")
 
     reader = SimulatedReader(update_rate=hz, laps=laps, time_scale=time_scale)
     parser = IRacingParser()
