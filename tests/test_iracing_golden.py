@@ -106,3 +106,13 @@ def test_sim_convention_integrates_to_a_circle():
     assert max(ys) - min(ys) == pytest.approx(2 * radius, rel=0.15)
     # closes the loop (last point near the first)
     assert abs(xs[-1] - xs[0]) < radius * 0.2
+
+
+def test_offtrack_flag_parsed():
+    from racecraft.parsers.iracing import IRacingParser
+    from tests.fixtures.iracing_frames import make_iracing_frame
+    p = IRacingParser()
+    on = p.parse(make_iracing_frame(IsOnTrack=True))
+    off = p.parse(make_iracing_frame(IsOnTrack=False))
+    assert on.is_racing is True
+    assert off.is_racing is False

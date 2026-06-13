@@ -39,6 +39,8 @@ class SessionCore:
         self._coach_clock = coach_clock
         self.session_active = False
         self.frames = 0
+        self.frames_skipped_offtrack = 0
+        self.parse_errors = 0
 
     async def start(self, game: str, track_name: str, car_name: str,
                     session_type: str = "practice",
@@ -60,8 +62,26 @@ class SessionCore:
         it). Invalid frames are skipped. Coach failures never break
         collection; upload failures are the StreamingClient's job to
         retry/spool and are logged here."""
-        telemetry = self.parser.parse(raw)
+        # A parser bug must never drop the whole session (loop 4, D):
+        # parse() catches internally, but belt-and-suspenders here too.
+        try:
+            telemetry = self.parser.parse(raw)
+        except Exception:
+            self.parse_errors += 1
+            logger.exception("parser raised (frame skipped, continuing)")
+            return None
         if not telemetry or not self.parser.validate_data(telemetry):
+            return None
+
+        # On-track gate (loop 4, D): menu/garage/replay frames pass the
+        # numeric validators (speed 0, valid inputs) but are NOT a live
+        # lap. Don't stream them as telemetry. is_racing comes from each
+        # sim's on-track flag (IsOnTrack / game state / session status).
+        if not getattr(telemetry, 'is_racing', True):
+            self.frames_skipped_offtrack += 1
+            if self.frames_skipped_offtrack % 600 == 1:
+                logger.debug("SessionCore: skipping off-track frames "
+                             f"(not on a live lap; {self.frames_skipped_offtrack} so far)")
             return None
 
         self.frames += 1

@@ -1,11 +1,14 @@
 """iRacing telemetry parser"""
 
+import logging
 import math
 import msgpack
 from typing import Optional
 from datetime import datetime
 
 from racecraft.interfaces import ITelemetryParser
+
+logger = logging.getLogger(__name__)
 from racecraft.models import (
     NormalizedTelemetry,
     TelemetryMetadata,
@@ -151,8 +154,7 @@ class IRacingParser(ITelemetryParser):
                 raw_data=data  # Preserve full iRacing data
             )
         except Exception as e:
-            # Log error, return None to skip invalid frame
-            print(f"Error parsing iRacing telemetry: {e}")
+            logger.warning(f"Error parsing iRacing telemetry (frame skipped): {e}")
             return None
 
     def _integrate_position(self, data: dict) -> Vector3:
@@ -235,7 +237,7 @@ class IRacingParser(ITelemetryParser):
 
             if temp_l or temp_c or temp_r:
                 return (temp_l + temp_c + temp_r) / 3.0
-        except:
+        except (TypeError, ValueError):
             pass
         return None
 
@@ -249,7 +251,7 @@ class IRacingParser(ITelemetryParser):
 
             if wear_l or wear_c or wear_r:
                 return (wear_l + wear_c + wear_r) / 3.0
-        except:
+        except (TypeError, ValueError):
             pass
         return None
 
@@ -264,6 +266,6 @@ class IRacingParser(ITelemetryParser):
             max_angle = data.get('SteeringWheelAngleMax', 1.0)
             if max_angle > 0:
                 return max(-1.0, min(1.0, angle / max_angle))
-        except:
+        except (TypeError, ValueError, ZeroDivisionError):
             pass
         return 0.0

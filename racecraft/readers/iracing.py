@@ -1,16 +1,19 @@
 """iRacing telemetry reader using shared memory"""
 
 import asyncio
+import logging
 from typing import AsyncIterator
 import msgpack
+
+logger = logging.getLogger(__name__)
 
 try:
     import irsdk
     IRSDK_AVAILABLE = True
 except ImportError:
     IRSDK_AVAILABLE = False
-    print("WARNING: pyirsdk not installed. iRacing support disabled.")
-    print("Install with: pip install pyirsdk")
+    logger.warning("pyirsdk not installed — iRacing support disabled "
+                   "(pip install pyirsdk)")
 
 from racecraft.interfaces import ITelemetryReader
 
@@ -27,6 +30,7 @@ class IRacingReader(ITelemetryReader):
         self._update_rate = update_rate
         self._poll_interval = 1.0 / update_rate
         self._stop_event = asyncio.Event()
+        self._key_fail_runs = 0
 
     async def connect(self) -> bool:
         """Connect to iRacing shared memory"""
@@ -63,22 +67,36 @@ class IRacingReader(ITelemetryReader):
                 # Freeze the data to get a consistent snapshot
                 await loop.run_in_executor(None, self._ir.freeze_var_buffer_latest)
 
-                # Build telemetry dict from available variables
+                # Build telemetry dict from available variables. Count
+                # per-key read failures: a few are normal (optional
+                # channels), but a HIGH fraction means the SDK shape
+                # changed — log it instead of silently shipping partial
+                # frames (loop 4, D).
                 data = {}
-                if self._ir.var_headers_names:
-                    for key in self._ir.var_headers_names:
-                        try:
-                            data[key] = self._ir[key]
-                        except:
-                            pass
+                names = self._ir.var_headers_names or []
+                failed = 0
+                for key in names:
+                    try:
+                        data[key] = self._ir[key]
+                    except Exception:
+                        failed += 1
+                if names and failed > 0:
+                    frac = failed / len(names)
+                    if frac > 0.25:
+                        self._key_fail_runs += 1
+                        if self._key_fail_runs % 60 == 1:  # ~once/sec at 60Hz
+                            logger.warning(
+                                "iRacing: %d/%d telemetry keys failed to read "
+                                "(%.0f%%) — possible SDK shape change",
+                                failed, len(names), frac * 100)
+                    else:
+                        self._key_fail_runs = 0
 
                 if data:
-                    # Serialize to bytes for interface compliance
                     yield msgpack.packb(data)
             except Exception as e:
-                print(f"Error reading iRacing telemetry: {e}")
-                # Don't crash, just skip this frame
-                pass
+                logger.warning(f"Error reading iRacing telemetry frame "
+                               f"(skipped): {e}")
 
             await asyncio.sleep(self._poll_interval)
 
@@ -86,7 +104,7 @@ class IRacingReader(ITelemetryReader):
         """Check if currently connected"""
         try:
             return self._ir.is_initialized if self._ir else False
-        except:
+        except Exception:
             return False
 
     @property
